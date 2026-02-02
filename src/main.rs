@@ -20,7 +20,6 @@ fn last_err() -> io::Error {
     io::Error::last_os_error()
 }
 
-
 fn close_fd(fd: RawFd) {
     unsafe {
         close(fd);
@@ -135,7 +134,7 @@ fn main() -> io::Result<()> {
     }
 
     // Monitor listener for incoming connections
-    epoll_add(epfd, listen_fd, (EPOLLIN | EPOLLET) as u32)?;
+    epoll_add(epfd, listen_fd, (EPOLLIN) as u32)?;
 
     let mut conns: HashMap<RawFd, Conn> = HashMap::new();
     let mut events: Vec<epoll_event> = vec![unsafe { mem::zeroed() }; MAX_EVENTS];
@@ -182,7 +181,11 @@ fn main() -> io::Result<()> {
                     }
 
                     // Monitor connection for readable + hangup + errors, edge-triggered
-                    epoll_add(epfd, cfd, (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR | EPOLLET) as u32)?;
+                    epoll_add(
+                        epfd,
+                        cfd,
+                        (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR) as u32,
+                    )?;
 
                     // Create conn state with a ready-to-send response
                     conns.insert(
@@ -198,7 +201,10 @@ fn main() -> io::Result<()> {
             }
 
             // If connection has error/hup, close it
-            if (flags & (EPOLLERR as u32)) != 0 || (flags & (EPOLLHUP as u32)) != 0 || (flags & (EPOLLRDHUP as u32)) != 0 {
+            if (flags & (EPOLLERR as u32)) != 0
+                || (flags & (EPOLLHUP as u32)) != 0
+                || (flags & (EPOLLRDHUP as u32)) != 0
+            {
                 epoll_del(epfd, fd);
                 conns.remove(&fd);
                 close_fd(fd);
@@ -214,6 +220,7 @@ fn main() -> io::Result<()> {
                         // ignore content; in a real server, parse request incrementally
                         continue;
                     } else if r == 0 {
+                        // if r == 0 means EOF
                         // peer closed
                         epoll_del(epfd, fd);
                         conns.remove(&fd);
@@ -236,7 +243,11 @@ fn main() -> io::Result<()> {
 
                 // Switch interest to writable to send response
                 if conns.contains_key(&fd) {
-                    epoll_mod(epfd, fd, (EPOLLOUT | EPOLLRDHUP | EPOLLHUP | EPOLLERR | EPOLLET) as u32)?;
+                    epoll_mod(
+                        epfd,
+                        fd,
+                        (EPOLLOUT | EPOLLRDHUP | EPOLLHUP | EPOLLERR) as u32,
+                    )?;
                 }
             }
 
@@ -279,4 +290,3 @@ fn main() -> io::Result<()> {
         }
     }
 }
-
