@@ -1,10 +1,15 @@
 mod helpers;
+mod https;
+mod router;
+
 use crate::helpers::should_drop;
 use crate::helpers::{
     accept_nonblocking, create_listen_socket, drop_conn, epoll_add, epoll_mod, last_err,
     recv_nonblocking, send_nonblocking,
 };
-use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
+use crate::https::{HeaderMap, HttpMethod, Request, Response, StatusCode};
+use crate::router::{error_response, Router};
+use libc::{epoll_event, EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP};
 use std::collections::HashMap;
 use std::io;
 use std::mem;
@@ -12,11 +17,23 @@ use std::os::unix::io::RawFd;
 
 #[derive(Debug)]
 struct Conn {
+    in_buf: Vec<u8>,
     out_buf: Vec<u8>,
+    state: ConnState,
+}
+
+#[derive(Debug)]
+enum ConnState {
+    ReadingHeaders,
+    Responding,
 }
 
 fn main() -> io::Result<()> {
     let port: u16 = 9090;
+
+    let mut router = Router::new();
+    router.add_route("/", vec![HttpMethod::Get], handle_root);
+    router.add_route("/health", vec![HttpMethod::Get], handle_health);
 
     let listen_fd = create_listen_socket(port)?;
     println!("listening on 0.0.0.0:{port}");
@@ -46,7 +63,7 @@ fn main() -> io::Result<()> {
             }
 
             if (flags & (EPOLLIN as u32)) != 0 {
-                if let Err(e) = handle_client_readable(epfd, fd, &mut conns) {
+                if let Err(e) = handle_client_readable(epfd, fd, &mut conns, &router) {
                     eprintln!("read error fd={fd}: {e}");
                     drop_conn(epfd, fd, &mut conns);
                     continue;
@@ -99,7 +116,9 @@ fn handle_listen_ready(
                 conns.insert(
                     client_fd,
                     Conn {
+                        in_buf: Vec::new(),
                         out_buf: Vec::new(),
+                        state: ConnState::ReadingHeaders,
                     },
                 );
 
@@ -120,6 +139,7 @@ fn handle_client_readable(
     epfd: RawFd,
     fd: RawFd,
     conns: &mut HashMap<RawFd, Conn>,
+    router: &Router,
 ) -> io::Result<()> {
     let mut buf = [0u8; 4096];
 
@@ -130,18 +150,26 @@ fn handle_client_readable(
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
             }
             Some(nread) => {
-                // respond with the length of this read chunk
-                let reply = format!("{nread}\n");
-
                 let c = conns
                     .get_mut(&fd)
                     .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
-                c.out_buf.extend_from_slice(reply.as_bytes());
+                c.in_buf.extend_from_slice(&buf[..nread]);
 
-                // If we have pending output, ensure EPOLLOUT is enabled.
-                if !c.out_buf.is_empty() {
-                    let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
-                    epoll_mod(epfd, fd, mask)?;
+                if matches!(c.state, ConnState::ReadingHeaders) {
+                    if let Some(header_end) = find_header_end(&c.in_buf) {
+                        let req_bytes = c.in_buf[..header_end].to_vec();
+
+                        let response = match parse_request(&req_bytes) {
+                            Ok(req) => router.handle(&req),
+                            Err(status) => error_response("HTTP/1.1", status),
+                        };
+
+                        c.out_buf.extend_from_slice(&response.to_bytes());
+                        c.state = ConnState::Responding;
+
+                        let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
+                        epoll_mod(epfd, fd, mask)?;
+                    }
                 }
             }
             None => break, // EAGAIN => no more data right now
@@ -156,24 +184,120 @@ fn handle_client_writable(
     fd: RawFd,
     conns: &mut HashMap<RawFd, Conn>,
 ) -> io::Result<()> {
-    let c = conns
-        .get_mut(&fd)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
+    let mut should_close = false;
 
-    while !c.out_buf.is_empty() {
-        match send_nonblocking(fd, &c.out_buf)? {
-            Some(nsent) => {
-                c.out_buf.drain(..nsent);
+    {
+        let c = conns
+            .get_mut(&fd)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
+
+        while !c.out_buf.is_empty() {
+            match send_nonblocking(fd, &c.out_buf)? {
+                Some(nsent) => {
+                    c.out_buf.drain(..nsent);
+                }
+                None => break, // EAGAIN => can't write more now
             }
-            None => break, // EAGAIN => can't write more now
+        }
+
+        if c.out_buf.is_empty() {
+            should_close = true;
         }
     }
 
-    // If buffer is empty, disable EPOLLOUT.
-    if c.out_buf.is_empty() {
-        let mask = (EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
-        let _ = epoll_mod(epfd, fd, mask);
+    if should_close {
+        drop_conn(epfd, fd, conns);
     }
 
     Ok(())
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+}
+
+fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
+    let text = std::str::from_utf8(buf).map_err(|_| StatusCode::BadRequest)?;
+    let mut lines = text.split("\r\n");
+
+    let request_line = lines.next().ok_or(StatusCode::BadRequest)?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().ok_or(StatusCode::BadRequest)?;
+    let raw_path = parts.next().ok_or(StatusCode::BadRequest)?;
+    let version = parts.next().ok_or(StatusCode::BadRequest)?;
+
+    if parts.next().is_some() {
+        return Err(StatusCode::BadRequest);
+    }
+
+    if version != "HTTP/1.1" && version != "HTTP/1.0" {
+        return Err(StatusCode::VersionNotSupported);
+    }
+
+    let mut headers = HeaderMap::default();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name, value);
+        }
+    }
+
+    let path = raw_path
+        .split_once('?')
+        .map(|(p, _)| p)
+        .unwrap_or(raw_path)
+        .to_string();
+
+    Ok(Request {
+        method: HttpMethod::from_str(method),
+        path,
+        version: version.to_string(),
+        headers,
+        body: Vec::new(),
+    })
+}
+
+fn handle_root(req: &Request) -> Response {
+    html_response(
+        &req.version,
+        StatusCode::Ok,
+        "<html><body><h1>Welcome</h1></body></html>",
+    )
+}
+
+fn handle_health(req: &Request) -> Response {
+    text_response(&req.version, StatusCode::Ok, "OK")
+}
+
+fn html_response(version: &str, status: StatusCode, html: &str) -> Response {
+    let body = html.as_bytes().to_vec();
+    let mut headers = HeaderMap::default();
+    headers.insert("Content-Type", "text/html; charset=utf-8");
+    headers.insert("Content-Length", &body.len().to_string());
+    headers.insert("Connection", "close");
+
+    Response {
+        version: version.to_string(),
+        status,
+        headers,
+        body,
+    }
+}
+
+fn text_response(version: &str, status: StatusCode, text: &str) -> Response {
+    let body = text.as_bytes().to_vec();
+    let mut headers = HeaderMap::default();
+    headers.insert("Content-Type", "text/plain; charset=utf-8");
+    headers.insert("Content-Length", &body.len().to_string());
+    headers.insert("Connection", "close");
+
+    Response {
+        version: version.to_string(),
+        status,
+        headers,
+        body,
+    }
 }

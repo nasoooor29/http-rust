@@ -1,6 +1,5 @@
 use std::{collections::HashMap, io, mem, net::Ipv4Addr, os::fd::RawFd};
 
-
 use crate::Conn;
 
 pub fn accept_nonblocking(listen_fd: RawFd) -> io::Result<Option<RawFd>> {
