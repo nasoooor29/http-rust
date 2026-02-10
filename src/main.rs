@@ -8,11 +8,11 @@ use crate::router::Router;
 fn main() {
     let port: u16 = 9090;
 
-    let mut router = Router::new();
+    let mut router = Router::new(port);
     router.add_route("/", vec![HttpMethod::Get], handle_root);
     router.add_route("/health", vec![HttpMethod::Get], handle_health);
 
-    let _ = router.listen_and_serve(port);
+    let _ = router.listen_and_serve();
     println!("Server is running on port {port}");
 }
 
