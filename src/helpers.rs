@@ -1,6 +1,4 @@
-use std::{collections::HashMap, io, mem, net::Ipv4Addr, os::fd::RawFd};
-
-use crate::Conn;
+use std::{io, mem, net::Ipv4Addr, os::fd::RawFd};
 
 fn is_would_block(e: &io::Error) -> bool {
     matches!(
@@ -21,7 +19,11 @@ pub fn accept_nonblocking(listen_fd: RawFd) -> io::Result<Option<RawFd>> {
     };
     if fd < 0 {
         let e = io::Error::last_os_error();
-        if is_would_block(&e) { Ok(None) } else { Err(e) }
+        if is_would_block(&e) {
+            Ok(None)
+        } else {
+            Err(e)
+        }
     } else {
         Ok(Some(fd))
     }
@@ -31,7 +33,11 @@ pub fn recv_nonblocking(fd: RawFd, buf: &mut [u8]) -> io::Result<Option<usize>> 
     let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
     if n < 0 {
         let e = io::Error::last_os_error();
-        if is_would_block(&e) { Ok(None) } else { Err(e) }
+        if is_would_block(&e) {
+            Ok(None)
+        } else {
+            Err(e)
+        }
     } else {
         Ok(Some(n as usize))
     }
@@ -49,7 +55,11 @@ pub fn send_nonblocking(fd: RawFd, buf: &[u8]) -> io::Result<Option<usize>> {
     };
     if n < 0 {
         let e = io::Error::last_os_error();
-        if is_would_block(&e) { Ok(None) } else { Err(e) }
+        if is_would_block(&e) {
+            Ok(None)
+        } else {
+            Err(e)
+        }
     } else {
         Ok(Some(n as usize))
     }
@@ -84,12 +94,6 @@ pub fn epoll_del(epfd: RawFd, fd: RawFd) {
     unsafe {
         libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut());
     }
-}
-
-pub fn drop_conn(epfd: RawFd, fd: RawFd, conns: &mut HashMap<RawFd, Conn>) {
-    epoll_del(epfd, fd);
-    conns.remove(&fd);
-    unsafe { libc::close(fd) };
 }
 
 pub fn last_err(ctx: &str) -> io::Error {
