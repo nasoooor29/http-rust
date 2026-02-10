@@ -120,3 +120,22 @@ impl Response {
         out
     }
 }
+
+pub fn response_with_body(
+    version: &str,
+    status: StatusCode,
+    content_type: &str,
+    body: Vec<u8>,
+) -> Response {
+    let mut headers = HeaderMap::default();
+    headers.insert("Content-Type", content_type);
+    headers.insert("Content-Length", &body.len().to_string());
+    headers.insert("Connection", "close");
+
+    Response {
+        version: version.to_string(),
+        status,
+        headers,
+        body,
+    }
+}

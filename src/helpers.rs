@@ -2,6 +2,13 @@ use std::{collections::HashMap, io, mem, net::Ipv4Addr, os::fd::RawFd};
 
 use crate::Conn;
 
+fn is_would_block(e: &io::Error) -> bool {
+    matches!(
+        e.raw_os_error(),
+        Some(code) if code == libc::EAGAIN || code == libc::EWOULDBLOCK
+    )
+}
+
 pub fn accept_nonblocking(listen_fd: RawFd) -> io::Result<Option<RawFd>> {
     // accept4 with libc::SOCK_NONBLOCK so the client libc::socket is nonblocking too.
     let fd = unsafe {
@@ -14,10 +21,7 @@ pub fn accept_nonblocking(listen_fd: RawFd) -> io::Result<Option<RawFd>> {
     };
     if fd < 0 {
         let e = io::Error::last_os_error();
-        match e.raw_os_error() {
-            Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK) => Ok(None),
-            _ => Err(e),
-        }
+        if is_would_block(&e) { Ok(None) } else { Err(e) }
     } else {
         Ok(Some(fd))
     }
@@ -27,10 +31,7 @@ pub fn recv_nonblocking(fd: RawFd, buf: &mut [u8]) -> io::Result<Option<usize>> 
     let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
     if n < 0 {
         let e = io::Error::last_os_error();
-        match e.raw_os_error() {
-            Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK) => Ok(None),
-            _ => Err(e),
-        }
+        if is_would_block(&e) { Ok(None) } else { Err(e) }
     } else {
         Ok(Some(n as usize))
     }
@@ -48,10 +49,7 @@ pub fn send_nonblocking(fd: RawFd, buf: &[u8]) -> io::Result<Option<usize>> {
     };
     if n < 0 {
         let e = io::Error::last_os_error();
-        match e.raw_os_error() {
-            Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK) => Ok(None),
-            _ => Err(e),
-        }
+        if is_would_block(&e) { Ok(None) } else { Err(e) }
     } else {
         Ok(Some(n as usize))
     }

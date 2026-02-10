@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::https::{HeaderMap, HttpMethod, Request, Response, StatusCode};
+use crate::https::{response_with_body, HttpMethod, Request, Response, StatusCode};
 
 pub type Handler = fn(&Request) -> Response;
 
@@ -47,16 +47,5 @@ pub fn error_response(version: &str, status: StatusCode) -> Response {
         reason
     )
     .into_bytes();
-
-    let mut headers = HeaderMap::default();
-    headers.insert("Content-Type", "text/html; charset=utf-8");
-    headers.insert("Content-Length", &body.len().to_string());
-    headers.insert("Connection", "close");
-
-    Response {
-        version: version.to_string(),
-        status,
-        headers,
-        body,
-    }
+    response_with_body(version, status, "text/html; charset=utf-8", body)
 }

@@ -7,9 +7,9 @@ use crate::helpers::{
     accept_nonblocking, create_listen_socket, drop_conn, epoll_add, epoll_mod, last_err,
     recv_nonblocking, send_nonblocking,
 };
-use crate::https::{HeaderMap, HttpMethod, Request, Response, StatusCode};
-use crate::router::{error_response, Router};
-use libc::{epoll_event, EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP};
+use crate::https::{HeaderMap, HttpMethod, Request, Response, StatusCode, response_with_body};
+use crate::router::{Router, error_response};
+use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
 use std::collections::HashMap;
 use std::io;
 use std::mem;
@@ -261,43 +261,24 @@ fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
 }
 
 fn handle_root(req: &Request) -> Response {
-    html_response(
+    let host = req.headers.get("host").unwrap_or("unknown-host");
+    let body = format!("<html><body><h1>Welcome</h1><p>Host: {host}</p></body></html>");
+
+    response_with_body(
         &req.version,
         StatusCode::Ok,
-        "<html><body><h1>Welcome</h1></body></html>",
+        "text/html; charset=utf-8",
+        body.into_bytes(),
     )
 }
 
 fn handle_health(req: &Request) -> Response {
-    text_response(&req.version, StatusCode::Ok, "OK")
-}
+    let _ = req.body.len();
 
-fn html_response(version: &str, status: StatusCode, html: &str) -> Response {
-    let body = html.as_bytes().to_vec();
-    let mut headers = HeaderMap::default();
-    headers.insert("Content-Type", "text/html; charset=utf-8");
-    headers.insert("Content-Length", &body.len().to_string());
-    headers.insert("Connection", "close");
-
-    Response {
-        version: version.to_string(),
-        status,
-        headers,
-        body,
-    }
-}
-
-fn text_response(version: &str, status: StatusCode, text: &str) -> Response {
-    let body = text.as_bytes().to_vec();
-    let mut headers = HeaderMap::default();
-    headers.insert("Content-Type", "text/plain; charset=utf-8");
-    headers.insert("Content-Length", &body.len().to_string());
-    headers.insert("Connection", "close");
-
-    Response {
-        version: version.to_string(),
-        status,
-        headers,
-        body,
-    }
+    response_with_body(
+        &req.version,
+        StatusCode::Ok,
+        "text/plain; charset=utf-8",
+        "OK".as_bytes().to_vec(),
+    )
 }
