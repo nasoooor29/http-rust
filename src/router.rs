@@ -19,15 +19,16 @@ pub struct Route {
 }
 
 pub struct Router {
-    routes: HashMap<String, Route>,
+    routes: HashMap<u16, HashMap<String, Route>>,
     epfd: i32,
     conns: HashMap<RawFd, Conn>,
     events: Vec<epoll_event>,
-    listen_fd: i32,
+    listen_fd_to_port: HashMap<RawFd, u16>,
 }
 
 #[derive(Debug)]
 pub struct Conn {
+    local_port: u16,
     in_buf: Vec<u8>,
     out_buf: Vec<u8>,
     state: ConnState,
@@ -41,31 +42,45 @@ enum ConnState {
 
 impl Router {
     pub fn new(port: u16) -> Self {
-        let listen_fd = create_listen_socket(port).unwrap();
-        println!("listening on 0.0.0.0:{port}");
+        Self::new_on_ports(&[port])
+    }
 
+    pub fn new_on_ports(ports: &[u16]) -> Self {
         let epfd = create_epoll().unwrap();
-        epoll_add(epfd, listen_fd, EPOLLIN as u32).unwrap();
+        let mut listen_fd_to_port: HashMap<RawFd, u16> = HashMap::new();
+
+        for &port in ports {
+            let listen_fd = create_listen_socket(port).unwrap();
+            println!("listening on 0.0.0.0:{port}");
+            epoll_add(epfd, listen_fd, EPOLLIN as u32).unwrap();
+            listen_fd_to_port.insert(listen_fd, port);
+        }
 
         let conns: HashMap<RawFd, Conn> = HashMap::new();
         let events: Vec<epoll_event> = vec![unsafe { mem::zeroed() }; 128];
 
         Self {
             routes: HashMap::new(),
-            epfd: epfd,
-            conns: conns,
-            events: events,
-            listen_fd,
+            epfd,
+            conns,
+            events,
+            listen_fd_to_port,
         }
     }
 
-    pub fn add_route(&mut self, path: &str, methods: Vec<HttpMethod>, handler: Handler) {
+    pub fn add_route(&mut self, port: u16, path: &str, methods: Vec<HttpMethod>, handler: Handler) {
         self.routes
+            .entry(port)
+            .or_default()
             .insert(path.to_string(), Route { methods, handler });
     }
 
-    pub fn handle(&self, req: &Request) -> Response {
-        match self.routes.get(&req.path) {
+    pub fn handle(&self, local_port: u16, req: &Request) -> Response {
+        match self
+            .routes
+            .get(&local_port)
+            .and_then(|port_routes| port_routes.get(&req.path))
+        {
             Some(route) => {
                 if route.methods.iter().any(|m| *m == req.method) {
                     (route.handler)(req)
@@ -77,22 +92,16 @@ impl Router {
         }
     }
 
-    pub fn listen_and_serve(&mut self) -> io::Result<()> {
-        loop {
-            let n = epoll_wait_blocking(self.epfd, &mut self.events)?;
-            self.handle_connections(n)?;
-        }
-    }
-
-    pub fn handle_connections(&mut self, n: usize) -> Result<(), io::Error> {
+    pub fn handle_connections(&mut self) -> Result<(), io::Error> {
+        let n = epoll_wait_blocking(self.epfd, &mut self.events)?;
         for i in 0..n {
             let (fd, flags) = {
                 let ev = &self.events[i];
                 (ev.u64 as RawFd, ev.events)
             };
 
-            if fd == self.listen_fd {
-                handle_listen_ready(self.epfd, self.listen_fd, &mut self.conns)?;
+            if let Some(&listen_port) = self.listen_fd_to_port.get(&fd) {
+                handle_listen_ready(self.epfd, fd, listen_port, &mut self.conns)?;
                 continue;
             }
 
@@ -139,15 +148,16 @@ impl Router {
                         c.in_buf.extend_from_slice(&buf[..nread]);
 
                         if matches!(c.state, ConnState::ReadingHeaders) {
-                            find_header_end(&c.in_buf).map(|header_end| c.in_buf[..header_end].to_vec())
+                            find_header_end(&c.in_buf)
+                                .map(|header_end| (c.in_buf[..header_end].to_vec(), c.local_port))
                         } else {
                             None
                         }
                     };
 
-                    if let Some(req_bytes) = req_bytes {
+                    if let Some((req_bytes, local_port)) = req_bytes {
                         let response = match parse_request(&req_bytes) {
-                            Ok(req) => self.handle(&req),
+                            Ok(req) => self.handle(local_port, &req),
                             Err(status) => error_response("HTTP/1.1", status),
                         };
 
@@ -205,6 +215,7 @@ fn epoll_wait_blocking(epfd: RawFd, events: &mut [epoll_event]) -> io::Result<us
 fn handle_listen_ready(
     epfd: RawFd,
     listen_fd: RawFd,
+    listen_port: u16,
     conns: &mut HashMap<RawFd, Conn>,
 ) -> io::Result<()> {
     loop {
@@ -213,6 +224,7 @@ fn handle_listen_ready(
                 conns.insert(
                     client_fd,
                     Conn {
+                        local_port: listen_port,
                         in_buf: Vec::new(),
                         out_buf: Vec::new(),
                         state: ConnState::ReadingHeaders,
