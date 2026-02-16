@@ -13,15 +13,22 @@ use crate::https::{
     HttpMethod, Request, Response, StatusCode, response_with_body,
 };
 
-pub type Handler = fn(&Request) -> Response;
+pub type Handler = fn(&Request, &Data) -> Response;
+
+pub struct Data {
+    pub path_value: HashMap<String, String>,
+    pub query_value: HashMap<String, String>,
+    pub header_value: HashMap<String, String>,
+}
 
 pub struct Route {
     pub methods: Vec<HttpMethod>,
+    pub pattern: String,
     pub handler: Handler,
 }
 
 pub struct Router {
-    routes: HashMap<u16, HashMap<String, Route>>,
+    routes: HashMap<u16, Vec<Route>>,
     epfd: i32,
     conns: HashMap<RawFd, Conn>,
     events: Vec<epoll_event>,
@@ -73,31 +80,49 @@ impl Router {
     pub fn add_route(
         &mut self,
         port: u16,
-        path: &str,
+        pattern: &str,
         methods: Vec<HttpMethod>,
         handler: Handler,
     ) {
-        self.routes
-            .entry(port)
-            .or_default()
-            .insert(path.to_string(), Route { methods, handler });
+        self.routes.entry(port).or_default().push(Route {
+            methods,
+            pattern: pattern.to_string(),
+            handler,
+        });
     }
 
     pub fn handle(&self, local_port: u16, req: &Request) -> Response {
-        match self
-            .routes
-            .get(&local_port)
-            .and_then(|port_routes| port_routes.get(&req.path))
-        {
-            Some(route) => {
-                if route.methods.iter().any(|m| *m == req.method) {
-                    (route.handler)(req)
-                } else {
-                    error_response(&req.version, StatusCode::MethodNotAllowed)
-                }
+        let Some(routes) = self.routes.get(&local_port) else {
+            return error_response(&req.version, StatusCode::NotFound);
+        };
+
+        let mut matched_path_but_wrong_method = false;
+
+        for route in routes {
+            let Some(path_value) = match_pattern(&route.pattern, &req.path)
+            else {
+                continue;
+            };
+
+            if !route.methods.iter().any(|m| *m == req.method) {
+                matched_path_but_wrong_method = true;
+                continue;
             }
-            None => error_response(&req.version, StatusCode::NotFound),
+
+            let data = Data {
+                path_value,
+                query_value: parse_query(&req.query),
+                header_value: collect_headers(req),
+            };
+
+            return (route.handler)(req, &data);
         }
+
+        if matched_path_but_wrong_method {
+            return error_response(&req.version, StatusCode::MethodNotAllowed);
+        }
+
+        error_response(&req.version, StatusCode::NotFound)
     }
 
     pub fn handle_connections(&mut self) -> Result<(), io::Error> {
@@ -354,17 +379,88 @@ fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
         }
     }
 
-    let path = raw_path
+    let (path, query) = raw_path
         .split_once('?')
-        .map(|(p, _)| p)
-        .unwrap_or(raw_path)
-        .to_string();
+        .map(|(p, q)| (p.to_string(), q.to_string()))
+        .unwrap_or((raw_path.to_string(), String::new()));
 
     Ok(Request {
         method: HttpMethod::from_str(method),
         path,
+        query,
         version: version.to_string(),
         headers,
         body: Vec::new(),
     })
+}
+
+fn match_pattern(
+    pattern: &str,
+    req_path: &str,
+) -> Option<HashMap<String, String>> {
+    let p = pattern.trim_matches('/');
+    let r = req_path.trim_matches('/');
+
+    let p_segs: Vec<&str> = if p.is_empty() {
+        vec![]
+    } else {
+        p.split('/').collect()
+    };
+    let r_segs: Vec<&str> = if r.is_empty() {
+        vec![]
+    } else {
+        r.split('/').collect()
+    };
+
+    if p_segs.len() != r_segs.len() {
+        return None;
+    }
+
+    let mut out = HashMap::new();
+
+    for (ps, rs) in p_segs.iter().zip(r_segs.iter()) {
+        if let Some(name) = ps.strip_prefix(':') {
+            if name.is_empty() {
+                return None;
+            }
+            out.insert(name.to_string(), (*rs).to_string());
+            continue;
+        }
+
+        if ps != rs {
+            return None;
+        }
+    }
+
+    Some(out)
+}
+
+fn parse_query(query: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if query.is_empty() {
+        return out;
+    }
+
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = match pair.split_once('=') {
+            Some((k, v)) => (k, v),
+            None => (pair, ""),
+        };
+        if !k.is_empty() {
+            out.insert(k.to_string(), v.to_string());
+        }
+    }
+
+    out
+}
+
+fn collect_headers(req: &Request) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (k, v) in req.headers.iter() {
+        out.insert(k.clone(), v.clone());
+    }
+    out
 }
