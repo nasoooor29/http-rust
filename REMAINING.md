@@ -9,8 +9,8 @@ Based on the current code in `src/main.rs`, `src/router.rs`, `src/https.rs`, and
   - [ ] Remove crash paths: `unwrap()` in server loop (`src/main.rs:31`) and listener setup unwraps (`src/router.rs:51`, `src/router.rs:55`) violate “server never crashes”.
 
 - EB:
-  - [ ] Implement `POST` and `DELETE` behavior end-to-end (routing, filesystem effects where needed, correct status codes), not just enum parsing in `src/https.rs:4`.
-  - [ ] Add per-connection/request timeout handling (currently `epoll_wait` is blocking with `-1` in `src/router.rs:240` and no client timeout policy).
+  - [x] Implement `POST` and `DELETE` behavior end-to-end (routing, filesystem effects where needed, correct status codes), not just enum parsing in `src/https.rs:4`.
+  - [x] Add per-connection/request timeout handling (currently `epoll_wait` is blocking with `-1` in `src/router.rs:240` and no client timeout policy).
   - [ ] Implement cookies + session system (explicit mandatory requirement and audit checkpoint).
 
 **P1 (core compliance)**

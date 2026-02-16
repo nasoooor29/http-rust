@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::io;
 use std::mem;
 use std::os::fd::RawFd;
+use std::time::Duration;
+use std::time::Instant;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
 
@@ -12,6 +14,10 @@ use crate::helpers::{
 use crate::https::{
     HttpMethod, Request, Response, StatusCode, response_with_body,
 };
+
+const EPOLL_WAIT_MS: i32 = 1000;
+const IDLE_TIMEOUT_SECS: u64 = 10; // NOTE: for testing I set it to 10seconds
+const IDLE_TIMEOUT: Duration = Duration::from_secs(IDLE_TIMEOUT_SECS);
 
 pub type Handler = fn(&Request, &Data) -> Response;
 
@@ -41,6 +47,7 @@ pub struct Conn {
     in_buf: Vec<u8>,
     out_buf: Vec<u8>,
     state: ConnState,
+    last_activity: Instant,
 }
 
 #[derive(Debug)]
@@ -168,6 +175,16 @@ impl Router {
             continue;
         }
 
+        // NOTE: handle timeout after pocessing all epoll events
+        let now = Instant::now();
+        let timed_out = collect_timed_out_conns(&self.conns, now);
+        for (fd, local_port) in timed_out {
+            eprintln!(
+                "dropped client connection fd={fd} on port={local_port} after {IDLE_TIMEOUT_SECS}s of inactivity",
+            );
+            drop_conn(self.epfd, fd, &mut self.conns);
+        }
+
         Ok(())
     }
 
@@ -195,6 +212,7 @@ impl Router {
                             )
                         })?;
                         c.in_buf.extend_from_slice(&buf[..nread]);
+                        c.last_activity = Instant::now();
 
                         if matches!(c.state, ConnState::ReadingHeaders) {
                             find_header_end(&c.in_buf).map(|header_end| {
@@ -262,7 +280,12 @@ fn epoll_wait_blocking(
 ) -> io::Result<usize> {
     loop {
         let n = unsafe {
-            libc::epoll_wait(epfd, events.as_mut_ptr(), events.len() as i32, -1)
+            libc::epoll_wait(
+                epfd,
+                events.as_mut_ptr(),
+                events.len() as i32,
+                EPOLL_WAIT_MS,
+            )
         };
         if n < 0 {
             let e = io::Error::last_os_error();
@@ -291,6 +314,7 @@ fn handle_listen_ready(
                         in_buf: Vec::new(),
                         out_buf: Vec::new(),
                         state: ConnState::ReadingHeaders,
+                        last_activity: Instant::now(),
                     },
                 );
 
@@ -323,6 +347,7 @@ fn handle_client_writable(
             match send_nonblocking(fd, &c.out_buf)? {
                 Some(nsent) => {
                     c.out_buf.drain(..nsent);
+                    c.last_activity = Instant::now();
                 }
                 None => break,
             }
@@ -463,4 +488,19 @@ fn collect_headers(req: &Request) -> HashMap<String, String> {
         out.insert(k.clone(), v.clone());
     }
     out
+}
+
+// NOTE: helper function for stale connection sweeper
+// Captures both port and last_activity to log more informative message when dropping stale connections
+fn collect_timed_out_conns(
+    conns: &HashMap<RawFd, Conn>,
+    now: Instant,
+) -> Vec<(RawFd, u16)> {
+    let mut timed_out = Vec::new();
+    for (fd, conn) in conns {
+        if now.duration_since(conn.last_activity) > IDLE_TIMEOUT {
+            timed_out.push((*fd, conn.local_port));
+        }
+    }
+    timed_out
 }
