@@ -6,12 +6,10 @@ use std::os::fd::RawFd;
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
 
 use crate::helpers::{
-    accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod,
-    last_err, recv_nonblocking, send_nonblocking, should_drop,
+    accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod, last_err,
+    recv_nonblocking, send_nonblocking, should_drop,
 };
-use crate::https::{
-    HttpMethod, Request, Response, StatusCode, response_with_body,
-};
+use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
 
 pub type Handler = fn(&Request) -> Response;
 
@@ -70,13 +68,7 @@ impl Router {
         }
     }
 
-    pub fn add_route(
-        &mut self,
-        port: u16,
-        path: &str,
-        methods: Vec<HttpMethod>,
-        handler: Handler,
-    ) {
+    pub fn add_route(&mut self, port: u16, path: &str, methods: Vec<HttpMethod>, handler: Handler) {
         self.routes
             .entry(port)
             .or_default()
@@ -109,12 +101,7 @@ impl Router {
             };
 
             if let Some(&listen_port) = self.listen_fd_to_port.get(&fd) {
-                handle_listen_ready(
-                    self.epfd,
-                    fd,
-                    listen_port,
-                    &mut self.conns,
-                )?;
+                handle_listen_ready(self.epfd, fd, listen_port, &mut self.conns)?;
                 continue;
             }
 
@@ -134,8 +121,7 @@ impl Router {
             if (flags & (EPOLLOUT as u32)) == 0 {
                 continue;
             }
-            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns)
-            else {
+            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns) else {
                 continue;
             };
             eprintln!("write error fd={fd}: {e}");
@@ -146,35 +132,24 @@ impl Router {
         Ok(())
     }
 
-    fn handle_client_readable(
-        &mut self,
-        epfd: RawFd,
-        fd: RawFd,
-    ) -> io::Result<()> {
+    fn handle_client_readable(&mut self, epfd: RawFd, fd: RawFd) -> io::Result<()> {
         let mut buf = [0u8; 4096];
 
         loop {
             match recv_nonblocking(fd, &mut buf)? {
                 Some(0) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "peer closed",
-                    ));
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
                 }
                 Some(nread) => {
                     let req_bytes = {
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                "conn missing",
-                            )
+                            io::Error::new(io::ErrorKind::NotFound, "conn missing")
                         })?;
                         c.in_buf.extend_from_slice(&buf[..nread]);
 
                         if matches!(c.state, ConnState::ReadingHeaders) {
-                            find_header_end(&c.in_buf).map(|header_end| {
-                                (c.in_buf[..header_end].to_vec(), c.local_port)
-                            })
+                            find_header_end(&c.in_buf)
+                                .map(|header_end| (c.in_buf[..header_end].to_vec(), c.local_port))
                         } else {
                             None
                         }
@@ -187,20 +162,12 @@ impl Router {
                         };
 
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                "conn missing",
-                            )
+                            io::Error::new(io::ErrorKind::NotFound, "conn missing")
                         })?;
                         c.out_buf.extend_from_slice(&response.to_bytes());
                         c.state = ConnState::Responding;
 
-                        let mask = (EPOLLIN
-                            | EPOLLOUT
-                            | EPOLLRDHUP
-                            | EPOLLERR
-                            | EPOLLHUP)
-                            as u32;
+                        let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
                         epoll_mod(epfd, fd, mask)?;
                     }
                 }
@@ -231,14 +198,9 @@ fn create_epoll() -> io::Result<RawFd> {
     Ok(epfd)
 }
 
-fn epoll_wait_blocking(
-    epfd: RawFd,
-    events: &mut [epoll_event],
-) -> io::Result<usize> {
+fn epoll_wait_blocking(epfd: RawFd, events: &mut [epoll_event]) -> io::Result<usize> {
     loop {
-        let n = unsafe {
-            libc::epoll_wait(epfd, events.as_mut_ptr(), events.len() as i32, -1)
-        };
+        let n = unsafe { libc::epoll_wait(epfd, events.as_mut_ptr(), events.len() as i32, -1) };
         if n < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::Interrupted {
@@ -290,9 +252,9 @@ fn handle_client_writable(
     let mut should_close = false;
 
     {
-        let c = conns.get_mut(&fd).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "conn missing")
-        })?;
+        let c = conns
+            .get_mut(&fd)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
 
         while !c.out_buf.is_empty() {
             match send_nonblocking(fd, &c.out_buf)? {
