@@ -37,7 +37,23 @@ pub struct Conn {
 #[derive(Debug)]
 enum ConnState {
     ReadingHeaders,
+    ReadingBody {
+        header_end: usize,
+        content_length: usize,
+    },
     Responding,
+}
+
+struct PendingRequest {
+    header_bytes: Vec<u8>,
+    body_bytes: Vec<u8>,
+    local_port: u16,
+}
+
+enum ReadOutcome {
+    Pending,
+    Ready(PendingRequest),
+    Error(StatusCode),
 }
 
 impl Router {
@@ -141,41 +157,92 @@ impl Router {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
                 }
                 Some(nread) => {
-                    let req_bytes = {
+                    let outcome = {
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::NotFound, "conn missing")
                         })?;
-                        c.in_buf.extend_from_slice(&buf[..nread]);
-
-                        if matches!(c.state, ConnState::ReadingHeaders) {
-                            find_header_end(&c.in_buf)
-                                .map(|header_end| (c.in_buf[..header_end].to_vec(), c.local_port))
-                        } else {
-                            None
-                        }
+                        read_outcome(c, &buf[..nread])
                     };
 
-                    if let Some((req_bytes, local_port)) = req_bytes {
-                        let response = match parse_request(&req_bytes) {
-                            Ok(req) => self.handle(local_port, &req),
-                            Err(status) => error_response("HTTP/1.1", status),
-                        };
+                    let response = match outcome {
+                        ReadOutcome::Pending => continue,
+                        ReadOutcome::Ready(parts) => {
+                            match parse_request(&parts.header_bytes, &parts.body_bytes) {
+                                Ok(req) => self.handle(parts.local_port, &req),
+                                Err(status) => error_response("HTTP/1.1", status),
+                            }
+                        }
+                        ReadOutcome::Error(status) => error_response("HTTP/1.1", status),
+                    };
 
-                        let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::NotFound, "conn missing")
-                        })?;
-                        c.out_buf.extend_from_slice(&response.to_bytes());
-                        c.state = ConnState::Responding;
+                    let c = self
+                        .conns
+                        .get_mut(&fd)
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
+                    c.out_buf.extend_from_slice(&response.to_bytes());
+                    c.state = ConnState::Responding;
 
-                        let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
-                        epoll_mod(epfd, fd, mask)?;
-                    }
+                    let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
+                    epoll_mod(epfd, fd, mask)?;
+                    break;
                 }
                 None => break,
             }
         }
 
         Ok(())
+    }
+}
+
+fn read_outcome(c: &mut Conn, new_bytes: &[u8]) -> ReadOutcome {
+    c.in_buf.extend_from_slice(new_bytes);
+
+    match c.state {
+        ConnState::ReadingHeaders => read_headers(c),
+        ConnState::ReadingBody {
+            header_end,
+            content_length,
+        } => read_body(c, header_end, content_length),
+        ConnState::Responding => ReadOutcome::Pending,
+    }
+}
+
+fn read_headers(c: &mut Conn) -> ReadOutcome {
+    let Some(header_end) = find_header_end(&c.in_buf) else {
+        return ReadOutcome::Pending;
+    };
+
+    let content_length = match parse_content_length(&c.in_buf[..header_end]) {
+        Ok(v) => v,
+        Err(status) => return ReadOutcome::Error(status),
+    };
+
+    if content_length == 0 {
+        return ReadOutcome::Ready(build_pending_request(c, header_end, 0));
+    }
+
+    c.state = ConnState::ReadingBody {
+        header_end,
+        content_length,
+    };
+    read_body(c, header_end, content_length)
+}
+
+fn read_body(c: &Conn, header_end: usize, content_length: usize) -> ReadOutcome {
+    let total_len = header_end + content_length;
+    if c.in_buf.len() < total_len {
+        return ReadOutcome::Pending;
+    }
+
+    ReadOutcome::Ready(build_pending_request(c, header_end, content_length))
+}
+
+fn build_pending_request(c: &Conn, header_end: usize, content_length: usize) -> PendingRequest {
+    let total_len = header_end + content_length;
+    PendingRequest {
+        header_bytes: c.in_buf[..header_end].to_vec(),
+        body_bytes: c.in_buf[header_end..total_len].to_vec(),
+        local_port: c.local_port,
     }
 }
 
@@ -287,8 +354,43 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
 }
 
-fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
-    let text = std::str::from_utf8(buf).map_err(|_| StatusCode::BadRequest)?;
+fn parse_content_length(header_bytes: &[u8]) -> Result<usize, StatusCode> {
+    let text = std::str::from_utf8(header_bytes).map_err(|_| StatusCode::BadRequest)?;
+    let mut lines = text.split("\r\n");
+
+    let _ = lines.next().ok_or(StatusCode::BadRequest)?;
+
+    let mut content_length: Option<usize> = None;
+
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+
+        if !name.eq_ignore_ascii_case("Content-Length") {
+            continue;
+        }
+
+        if content_length.is_some() {
+            return Err(StatusCode::BadRequest);
+        }
+
+        let parsed = value
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| StatusCode::BadRequest)?;
+        content_length = Some(parsed);
+    }
+
+    content_length.ok_or(StatusCode::BadRequest)
+}
+
+fn parse_request(header_bytes: &[u8], body: &[u8]) -> Result<Request, StatusCode> {
+    let text = std::str::from_utf8(header_bytes).map_err(|_| StatusCode::BadRequest)?;
     let mut lines = text.split("\r\n");
 
     let request_line = lines.next().ok_or(StatusCode::BadRequest)?;
@@ -327,6 +429,6 @@ fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
         path,
         version: version.to_string(),
         headers,
-        body: Vec::new(),
+        body: body.to_vec(),
     })
 }

@@ -10,6 +10,7 @@ fn main() {
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
     router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
+    router.add_route(8080, "/upload", vec![HttpMethod::Post], handle_upload);
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
     router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
@@ -63,5 +64,21 @@ fn handle_admin_health(req: &Request) -> Response {
         StatusCode::Ok,
         "text/plain; charset=utf-8",
         "ADMIN_OK".as_bytes().to_vec(),
+    )
+}
+
+fn handle_upload(req: &Request) -> Response {
+    println!(
+        "received upload: {} bytes\n{}",
+        req.body.len(),
+        String::from_utf8_lossy(&req.body)
+    );
+
+    let body = format!("UPLOAD_OK {} bytes", req.body.len());
+    response_with_body(
+        &req.version,
+        StatusCode::Ok,
+        "text/plain; charset=utf-8",
+        body.into_bytes(),
     )
 }
