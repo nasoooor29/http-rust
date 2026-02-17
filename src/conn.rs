@@ -115,6 +115,6 @@ impl Conn {
             content_length = Some(parsed);
         }
 
-        content_length.ok_or(StatusCode::BadRequest)
+        Ok(content_length.unwrap_or(0))
     }
 }

@@ -303,6 +303,11 @@ fn parse_request(header_bytes: &[u8], body: &[u8]) -> Result<Request, StatusCode
         return Err(StatusCode::VersionNotSupported);
     }
 
+    let method = HttpMethod::from_str(method);
+    if matches!(method, HttpMethod::Post) && body.is_empty() {
+        return Err(StatusCode::BadRequest);
+    }
+
     let mut headers = crate::https::HeaderMap::default();
     for line in lines {
         if line.is_empty() {
@@ -321,7 +326,7 @@ fn parse_request(header_bytes: &[u8], body: &[u8]) -> Result<Request, StatusCode
         .to_string();
 
     Ok(Request {
-        method: HttpMethod::from_str(method),
+        method,
         path,
         version: version.to_string(),
         headers,

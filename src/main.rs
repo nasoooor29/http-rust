@@ -1,7 +1,7 @@
+mod conn;
 mod helpers;
 mod https;
 mod router;
-mod conn;
 
 use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
 use crate::router::Router;
@@ -12,6 +12,12 @@ fn main() {
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
     router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
     router.add_route(8080, "/upload", vec![HttpMethod::Post], handle_upload);
+    router.add_route(
+        8080,
+        "/upload_thing",
+        vec![HttpMethod::Get],
+        handle_get_uploaded,
+    );
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
     router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
@@ -74,12 +80,27 @@ fn handle_upload(req: &Request) -> Response {
         req.body.len(),
         String::from_utf8_lossy(&req.body)
     );
+    // save it to file for demonstration purposes
+    std::fs::write("uploaded", &req.body).unwrap();
 
-    let body = format!("UPLOAD_OK {} bytes", req.body.len());
     response_with_body(
         &req.version,
         StatusCode::Ok,
         "text/plain; charset=utf-8",
-        body.into_bytes(),
+        "ok".to_string().into_bytes(),
+    )
+}
+fn handle_get_uploaded(req: &Request) -> Response {
+    println!("  handling get uploaded");
+    let body = match std::fs::read("uploaded") {
+        Ok(bytes) => bytes,
+        Err(_) => b"no uploaded file".to_vec(),
+    };
+
+    response_with_body(
+        &req.version,
+        StatusCode::Ok,
+        "text/plain; charset=utf-8",
+        body,
     )
 }
