@@ -5,6 +5,8 @@ use std::os::fd::RawFd;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
 
+use crate::conn::Conn;
+use crate::conn::ConnState;
 use crate::helpers::{
     accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod, last_err,
     recv_nonblocking, send_nonblocking, should_drop,
@@ -25,51 +27,34 @@ pub struct Router {
     events: Vec<epoll_event>,
     listen_fd_to_port: HashMap<RawFd, u16>,
 }
-
-#[derive(Debug)]
-pub struct Conn {
-    local_port: u16,
-    in_buf: Vec<u8>,
-    out_buf: Vec<u8>,
-    state: ConnState,
+pub struct PendingRequest {
+    pub header_bytes: Vec<u8>,
+    pub body_bytes: Vec<u8>,
+    pub local_port: u16,
 }
 
-#[derive(Debug)]
-enum ConnState {
-    ReadingHeaders,
-    ReadingBody {
-        header_end: usize,
-        content_length: usize,
-    },
-    Responding,
-}
-
-struct PendingRequest {
-    header_bytes: Vec<u8>,
-    body_bytes: Vec<u8>,
-    local_port: u16,
-}
-
-enum ReadOutcome {
+pub enum ReadOutcome {
     Pending,
     Ready(PendingRequest),
     Error(StatusCode),
 }
 
 impl Router {
-    pub fn new(port: u16) -> Self {
-        Self::new_on_ports(&[port])
-    }
-
     pub fn new_on_ports(ports: &[u16]) -> Self {
         let epfd = create_epoll().unwrap();
         let mut listen_fd_to_port: HashMap<RawFd, u16> = HashMap::new();
 
         for &port in ports {
-            let listen_fd = create_listen_socket(port).unwrap();
-            println!("listening on 0.0.0.0:{port}");
-            epoll_add(epfd, listen_fd, EPOLLIN as u32).unwrap();
-            listen_fd_to_port.insert(listen_fd, port);
+            match create_listen_socket(port) {
+                Ok(listen_fd) => {
+                    println!("listening on 0.0.0.0:{port}");
+                    epoll_add(epfd, listen_fd, EPOLLIN as u32).unwrap();
+                    listen_fd_to_port.insert(listen_fd, port);
+                }
+                Err(err) => {
+                    println!("could not create a listener on port: {port}, error: {err}");
+                }
+            };
         }
 
         let conns: HashMap<RawFd, Conn> = HashMap::new();
@@ -161,7 +146,7 @@ impl Router {
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::NotFound, "conn missing")
                         })?;
-                        read_outcome(c, &buf[..nread])
+                        c.read_outcome(&buf[..nread])
                     };
 
                     let response = match outcome {
@@ -193,59 +178,6 @@ impl Router {
         Ok(())
     }
 }
-
-fn read_outcome(c: &mut Conn, new_bytes: &[u8]) -> ReadOutcome {
-    c.in_buf.extend_from_slice(new_bytes);
-
-    match c.state {
-        ConnState::ReadingHeaders => read_headers(c),
-        ConnState::ReadingBody {
-            header_end,
-            content_length,
-        } => read_body(c, header_end, content_length),
-        ConnState::Responding => ReadOutcome::Pending,
-    }
-}
-
-fn read_headers(c: &mut Conn) -> ReadOutcome {
-    let Some(header_end) = find_header_end(&c.in_buf) else {
-        return ReadOutcome::Pending;
-    };
-
-    let content_length = match parse_content_length(&c.in_buf[..header_end]) {
-        Ok(v) => v,
-        Err(status) => return ReadOutcome::Error(status),
-    };
-
-    if content_length == 0 {
-        return ReadOutcome::Ready(build_pending_request(c, header_end, 0));
-    }
-
-    c.state = ConnState::ReadingBody {
-        header_end,
-        content_length,
-    };
-    read_body(c, header_end, content_length)
-}
-
-fn read_body(c: &Conn, header_end: usize, content_length: usize) -> ReadOutcome {
-    let total_len = header_end + content_length;
-    if c.in_buf.len() < total_len {
-        return ReadOutcome::Pending;
-    }
-
-    ReadOutcome::Ready(build_pending_request(c, header_end, content_length))
-}
-
-fn build_pending_request(c: &Conn, header_end: usize, content_length: usize) -> PendingRequest {
-    let total_len = header_end + content_length;
-    PendingRequest {
-        header_bytes: c.in_buf[..header_end].to_vec(),
-        body_bytes: c.in_buf[header_end..total_len].to_vec(),
-        local_port: c.local_port,
-    }
-}
-
 pub fn error_response(version: &str, status: StatusCode) -> Response {
     let reason = status.reason();
     let body = format!(
@@ -348,45 +280,6 @@ fn drop_conn(epfd: RawFd, fd: RawFd, conns: &mut HashMap<RawFd, Conn>) {
     epoll_del(epfd, fd);
     conns.remove(&fd);
     unsafe { libc::close(fd) };
-}
-
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
-}
-
-fn parse_content_length(header_bytes: &[u8]) -> Result<usize, StatusCode> {
-    let text = std::str::from_utf8(header_bytes).map_err(|_| StatusCode::BadRequest)?;
-    let mut lines = text.split("\r\n");
-
-    let _ = lines.next().ok_or(StatusCode::BadRequest)?;
-
-    let mut content_length: Option<usize> = None;
-
-    for line in lines {
-        if line.is_empty() {
-            break;
-        }
-
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-
-        if !name.eq_ignore_ascii_case("Content-Length") {
-            continue;
-        }
-
-        if content_length.is_some() {
-            return Err(StatusCode::BadRequest);
-        }
-
-        let parsed = value
-            .trim()
-            .parse::<usize>()
-            .map_err(|_| StatusCode::BadRequest)?;
-        content_length = Some(parsed);
-    }
-
-    content_length.ok_or(StatusCode::BadRequest)
 }
 
 fn parse_request(header_bytes: &[u8], body: &[u8]) -> Result<Request, StatusCode> {

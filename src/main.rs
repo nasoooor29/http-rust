@@ -1,6 +1,7 @@
 mod helpers;
 mod https;
 mod router;
+mod conn;
 
 use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
 use crate::router::Router;
