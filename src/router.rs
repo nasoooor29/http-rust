@@ -36,7 +36,7 @@ pub struct PendingRequest {
 pub enum ReadOutcome {
     Pending,
     Ready(PendingRequest),
-    Error(StatusCode),
+    Error { status: StatusCode, reason: String },
 }
 
 impl Router {
@@ -228,10 +228,16 @@ impl Router {
                         ReadOutcome::Ready(parts) => {
                             match parse_request(&parts.header_bytes, &parts.body_bytes) {
                                 Ok(req) => self.handle(parts.local_port, &req),
-                                Err(status) => error_response("HTTP/1.1", status),
+                                Err((status, reason)) => {
+                                    eprintln!("request rejected: {reason}");
+                                    error_response("HTTP/1.1", status)
+                                }
                             }
                         }
-                        ReadOutcome::Error(status) => error_response("HTTP/1.1", status),
+                        ReadOutcome::Error { status, reason } => {
+                            eprintln!("request rejected: {reason}");
+                            error_response("HTTP/1.1", status)
+                        }
                     };
 
                     let c = self
@@ -285,27 +291,41 @@ fn epoll_wait_blocking(epfd: RawFd, events: &mut [epoll_event]) -> io::Result<us
     }
 }
 
-fn parse_request(header_bytes: &[u8], body: &[u8]) -> Result<Request, StatusCode> {
-    let text = std::str::from_utf8(header_bytes).map_err(|_| StatusCode::BadRequest)?;
+fn parse_request(header_bytes: &[u8], body: &[u8]) -> Result<Request, (StatusCode, String)> {
+    let bad_request = |reason: &str| (StatusCode::BadRequest, reason.to_string());
+
+    let text = std::str::from_utf8(header_bytes)
+        .map_err(|_| bad_request("request headers are not valid UTF-8"))?;
     let mut lines = text.split("\r\n");
 
-    let request_line = lines.next().ok_or(StatusCode::BadRequest)?;
+    let request_line = lines
+        .next()
+        .ok_or_else(|| bad_request("missing request line"))?;
     let mut parts = request_line.split_whitespace();
-    let method = parts.next().ok_or(StatusCode::BadRequest)?;
-    let raw_path = parts.next().ok_or(StatusCode::BadRequest)?;
-    let version = parts.next().ok_or(StatusCode::BadRequest)?;
+    let method = parts
+        .next()
+        .ok_or_else(|| bad_request("missing HTTP method"))?;
+    let raw_path = parts
+        .next()
+        .ok_or_else(|| bad_request("missing request path"))?;
+    let version = parts
+        .next()
+        .ok_or_else(|| bad_request("missing HTTP version"))?;
 
     if parts.next().is_some() {
-        return Err(StatusCode::BadRequest);
+        return Err(bad_request("request line has extra fields"));
     }
 
     if version != "HTTP/1.1" && version != "HTTP/1.0" {
-        return Err(StatusCode::VersionNotSupported);
+        return Err((
+            StatusCode::VersionNotSupported,
+            "unsupported HTTP version".to_string(),
+        ));
     }
 
     let method = HttpMethod::from_str(method);
     if matches!(method, HttpMethod::Post) && body.is_empty() {
-        return Err(StatusCode::BadRequest);
+        return Err(bad_request("POST request requires a non-empty body"));
     }
 
     let mut headers = crate::https::HeaderMap::default();

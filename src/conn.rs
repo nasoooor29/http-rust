@@ -40,7 +40,12 @@ impl Conn {
 
         let content_length = match Self::parse_content_length(&self.in_buf[..header_end]) {
             Ok(v) => v,
-            Err(status) => return ReadOutcome::Error(status),
+            Err(reason) => {
+                return ReadOutcome::Error {
+                    status: StatusCode::BadRequest,
+                    reason,
+                };
+            }
         };
 
         if content_length == 0 {
@@ -83,11 +88,14 @@ impl Conn {
             .map(|i| i + 4)
     }
 
-    fn parse_content_length(header_bytes: &[u8]) -> Result<usize, StatusCode> {
-        let text = std::str::from_utf8(header_bytes).map_err(|_| StatusCode::BadRequest)?;
+    fn parse_content_length(header_bytes: &[u8]) -> Result<usize, String> {
+        let text = std::str::from_utf8(header_bytes)
+            .map_err(|_| "request headers are not valid UTF-8".to_string())?;
         let mut lines = text.split("\r\n");
 
-        let _ = lines.next().ok_or(StatusCode::BadRequest)?;
+        let _ = lines
+            .next()
+            .ok_or_else(|| "missing request line".to_string())?;
 
         let mut content_length: Option<usize> = None;
 
@@ -105,13 +113,13 @@ impl Conn {
             }
 
             if content_length.is_some() {
-                return Err(StatusCode::BadRequest);
+                return Err("duplicate Content-Length header".to_string());
             }
 
             let parsed = value
                 .trim()
                 .parse::<usize>()
-                .map_err(|_| StatusCode::BadRequest)?;
+                .map_err(|_| "Content-Length must be a positive integer".to_string())?;
             content_length = Some(parsed);
         }
 
