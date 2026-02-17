@@ -102,38 +102,112 @@ impl Router {
             };
 
             if let Some(&listen_port) = self.listen_fd_to_port.get(&fd) {
-                handle_listen_ready(self.epfd, fd, listen_port, &mut self.conns)?;
+                self.handle_listen_ready(fd, listen_port)?;
                 continue;
             }
 
             if should_drop(flags) {
-                drop_conn(self.epfd, fd, &mut self.conns);
+                self.drop_conn(fd);
                 continue;
             }
 
             if (flags & (EPOLLIN as u32)) != 0
-                && let Err(e) = self.handle_client_readable(self.epfd, fd)
+                && let Err(e) = self.handle_client_readable(fd)
             {
                 eprintln!("read error fd={fd}: {e}");
-                drop_conn(self.epfd, fd, &mut self.conns);
+                self.drop_conn(fd);
                 continue;
             }
 
             if (flags & (EPOLLOUT as u32)) == 0 {
                 continue;
             }
-            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns) else {
+            let Err(e) = self.handle_client_writable(fd) else {
                 continue;
             };
             eprintln!("write error fd={fd}: {e}");
-            drop_conn(self.epfd, fd, &mut self.conns);
+            self.drop_conn(fd);
             continue;
         }
 
         Ok(())
     }
 
-    fn handle_client_readable(&mut self, epfd: RawFd, fd: RawFd) -> io::Result<()> {
+    fn handle_listen_ready(
+        &mut self,
+        // epfd: RawFd,
+        listen_fd: RawFd,
+        listen_port: u16,
+        // conns: &mut HashMap<RawFd, Conn>,
+    ) -> io::Result<()> {
+        loop {
+            match accept_nonblocking(listen_fd) {
+                Ok(Some(client_fd)) => {
+                    self.conns.insert(
+                        client_fd,
+                        Conn {
+                            local_port: listen_port,
+                            in_buf: Vec::new(),
+                            out_buf: Vec::new(),
+                            state: ConnState::ReadingHeaders,
+                        },
+                    );
+
+                    let mask = (EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
+                    epoll_add(self.epfd, client_fd, mask)?;
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("accept error: {e}");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_client_writable(
+        &mut self,
+        // epfd: RawFd,
+        fd: RawFd,
+        // conns: &mut HashMap<RawFd, Conn>,
+    ) -> io::Result<()> {
+        let mut should_close = false;
+
+        {
+            let c = self
+                .conns
+                .get_mut(&fd)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
+
+            while !c.out_buf.is_empty() {
+                match send_nonblocking(fd, &c.out_buf)? {
+                    Some(nsent) => {
+                        c.out_buf.drain(..nsent);
+                    }
+                    None => break,
+                }
+            }
+
+            if c.out_buf.is_empty() {
+                should_close = true;
+            }
+        }
+
+        if should_close {
+            self.drop_conn(fd);
+        }
+
+        Ok(())
+    }
+
+    fn drop_conn(&mut self, fd: RawFd) {
+        epoll_del(self.epfd, fd);
+        self.conns.remove(&fd);
+        unsafe { libc::close(fd) };
+    }
+
+    fn handle_client_readable(&mut self, fd: RawFd) -> io::Result<()> {
         let mut buf = [0u8; 4096];
 
         loop {
@@ -168,7 +242,7 @@ impl Router {
                     c.state = ConnState::Responding;
 
                     let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
-                    epoll_mod(epfd, fd, mask)?;
+                    epoll_mod(self.epfd, fd, mask)?;
                     break;
                 }
                 None => break,
@@ -209,77 +283,6 @@ fn epoll_wait_blocking(epfd: RawFd, events: &mut [epoll_event]) -> io::Result<us
         }
         return Ok(n as usize);
     }
-}
-
-fn handle_listen_ready(
-    epfd: RawFd,
-    listen_fd: RawFd,
-    listen_port: u16,
-    conns: &mut HashMap<RawFd, Conn>,
-) -> io::Result<()> {
-    loop {
-        match accept_nonblocking(listen_fd) {
-            Ok(Some(client_fd)) => {
-                conns.insert(
-                    client_fd,
-                    Conn {
-                        local_port: listen_port,
-                        in_buf: Vec::new(),
-                        out_buf: Vec::new(),
-                        state: ConnState::ReadingHeaders,
-                    },
-                );
-
-                let mask = (EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
-                epoll_add(epfd, client_fd, mask)?;
-            }
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("accept error: {e}");
-                break;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn handle_client_writable(
-    epfd: RawFd,
-    fd: RawFd,
-    conns: &mut HashMap<RawFd, Conn>,
-) -> io::Result<()> {
-    let mut should_close = false;
-
-    {
-        let c = conns
-            .get_mut(&fd)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
-
-        while !c.out_buf.is_empty() {
-            match send_nonblocking(fd, &c.out_buf)? {
-                Some(nsent) => {
-                    c.out_buf.drain(..nsent);
-                }
-                None => break,
-            }
-        }
-
-        if c.out_buf.is_empty() {
-            should_close = true;
-        }
-    }
-
-    if should_close {
-        drop_conn(epfd, fd, conns);
-    }
-
-    Ok(())
-}
-
-fn drop_conn(epfd: RawFd, fd: RawFd, conns: &mut HashMap<RawFd, Conn>) {
-    epoll_del(epfd, fd);
-    conns.remove(&fd);
-    unsafe { libc::close(fd) };
 }
 
 fn parse_request(header_bytes: &[u8], body: &[u8]) -> Result<Request, StatusCode> {
