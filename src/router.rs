@@ -9,10 +9,12 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 
 use crate::helpers::{
-    accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod, last_err,
-    recv_nonblocking, send_nonblocking, should_drop,
+    accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod,
+    last_err, recv_nonblocking, send_nonblocking, should_drop,
 };
-use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
+use crate::https::{
+    HttpMethod, Request, Response, StatusCode, response_with_body,
+};
 
 const EPOLL_WAIT_MS: i32 = 1000;
 const IDLE_TIMEOUT_SECS: u64 = 10; // NOTE: for testing I set it to 10seconds
@@ -122,7 +124,8 @@ impl Router {
             let mut found: Option<(Handler, HashMap<String, String>)> = None;
 
             for route in routes {
-                let Some(path_value) = match_pattern(&route.pattern, &req.path) else {
+                let Some(path_value) = match_pattern(&route.pattern, &req.path)
+                else {
                     continue;
                 };
 
@@ -141,13 +144,17 @@ impl Router {
         let (found, matched_path_but_wrong_method) = match_result;
         let Some((handler, path_value)) = found else {
             if matched_path_but_wrong_method {
-                return error_response(&req.version, StatusCode::MethodNotAllowed);
+                return error_response(
+                    &req.version,
+                    StatusCode::MethodNotAllowed,
+                );
             }
             return error_response(&req.version, StatusCode::NotFound);
         };
 
         let now = Instant::now();
-        let (session_id, is_new_session) = resolve_session(&mut self.sessions, req, now);
+        let (session_id, is_new_session) =
+            resolve_session(&mut self.sessions, req, now);
 
         let data = Data {
             path_value,
@@ -176,7 +183,12 @@ impl Router {
             };
 
             if let Some(&listen_port) = self.listen_fd_to_port.get(&fd) {
-                handle_listen_ready(self.epfd, fd, listen_port, &mut self.conns)?;
+                handle_listen_ready(
+                    self.epfd,
+                    fd,
+                    listen_port,
+                    &mut self.conns,
+                )?;
                 continue;
             }
 
@@ -196,7 +208,8 @@ impl Router {
             if (flags & (EPOLLOUT as u32)) == 0 {
                 continue;
             }
-            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns) else {
+            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns)
+            else {
                 continue;
             };
             eprintln!("write error fd={fd}: {e}");
@@ -219,25 +232,36 @@ impl Router {
         Ok(())
     }
 
-    fn handle_client_readable(&mut self, epfd: RawFd, fd: RawFd) -> io::Result<()> {
+    fn handle_client_readable(
+        &mut self,
+        epfd: RawFd,
+        fd: RawFd,
+    ) -> io::Result<()> {
         let mut buf = [0u8; 4096];
 
         loop {
             match recv_nonblocking(fd, &mut buf)? {
                 Some(0) => {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "peer closed",
+                    ));
                 }
                 Some(nread) => {
                     let req_bytes = {
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::NotFound, "conn missing")
+                            io::Error::new(
+                                io::ErrorKind::NotFound,
+                                "conn missing",
+                            )
                         })?;
                         c.in_buf.extend_from_slice(&buf[..nread]);
                         c.last_activity = Instant::now();
 
                         if matches!(c.state, ConnState::ReadingHeaders) {
-                            find_header_end(&c.in_buf)
-                                .map(|header_end| (c.in_buf[..header_end].to_vec(), c.local_port))
+                            find_header_end(&c.in_buf).map(|header_end| {
+                                (c.in_buf[..header_end].to_vec(), c.local_port)
+                            })
                         } else {
                             None
                         }
@@ -250,12 +274,20 @@ impl Router {
                         };
 
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::NotFound, "conn missing")
+                            io::Error::new(
+                                io::ErrorKind::NotFound,
+                                "conn missing",
+                            )
                         })?;
                         c.out_buf.extend_from_slice(&response.to_bytes());
                         c.state = ConnState::Responding;
 
-                        let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
+                        let mask = (EPOLLIN
+                            | EPOLLOUT
+                            | EPOLLRDHUP
+                            | EPOLLERR
+                            | EPOLLHUP)
+                            as u32;
                         epoll_mod(epfd, fd, mask)?;
                     }
                 }
@@ -286,7 +318,10 @@ fn create_epoll() -> io::Result<RawFd> {
     Ok(epfd)
 }
 
-fn epoll_wait_blocking(epfd: RawFd, events: &mut [epoll_event]) -> io::Result<usize> {
+fn epoll_wait_blocking(
+    epfd: RawFd,
+    events: &mut [epoll_event],
+) -> io::Result<usize> {
     loop {
         let n = unsafe {
             libc::epoll_wait(
@@ -348,9 +383,9 @@ fn handle_client_writable(
     let mut should_close = false;
 
     {
-        let c = conns
-            .get_mut(&fd)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
+        let c = conns.get_mut(&fd).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "conn missing")
+        })?;
 
         while !c.out_buf.is_empty() {
             match send_nonblocking(fd, &c.out_buf)? {
@@ -428,7 +463,10 @@ fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
     })
 }
 
-fn match_pattern(pattern: &str, req_path: &str) -> Option<HashMap<String, String>> {
+fn match_pattern(
+    pattern: &str,
+    req_path: &str,
+) -> Option<HashMap<String, String>> {
     let p = pattern.trim_matches('/');
     let r = req_path.trim_matches('/');
 
@@ -498,7 +536,10 @@ fn collect_headers(req: &Request) -> HashMap<String, String> {
 
 // NOTE: helper function for stale connection sweeper
 // Captures both port and last_activity to log more informative message when dropping stale connections
-fn collect_timed_out_conns(conns: &HashMap<RawFd, Conn>, now: Instant) -> Vec<(RawFd, u16)> {
+fn collect_timed_out_conns(
+    conns: &HashMap<RawFd, Conn>,
+    now: Instant,
+) -> Vec<(RawFd, u16)> {
     let mut timed_out = Vec::new();
     for (fd, conn) in conns {
         if now.duration_since(conn.last_activity) > IDLE_TIMEOUT {
@@ -568,6 +609,9 @@ fn resolve_session(
     (Some(sid), true)
 }
 
-fn cleanup_expired_sessions(sessions: &mut HashMap<String, Session>, now: Instant) {
+fn cleanup_expired_sessions(
+    sessions: &mut HashMap<String, Session>,
+    now: Instant,
+) {
     sessions.retain(|_, s| now.duration_since(s.last_seen) <= SESSION_TTL);
 }
