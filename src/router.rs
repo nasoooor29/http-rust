@@ -2,22 +2,24 @@ use std::collections::HashMap;
 use std::io;
 use std::mem;
 use std::os::fd::RawFd;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
+use rand::RngCore;
+use rand::rngs::OsRng;
 
 use crate::helpers::{
-    accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod,
-    last_err, recv_nonblocking, send_nonblocking, should_drop,
+    accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod, last_err,
+    recv_nonblocking, send_nonblocking, should_drop,
 };
-use crate::https::{
-    HttpMethod, Request, Response, StatusCode, response_with_body,
-};
+use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
 
 const EPOLL_WAIT_MS: i32 = 1000;
 const IDLE_TIMEOUT_SECS: u64 = 10; // NOTE: for testing I set it to 10seconds
 const IDLE_TIMEOUT: Duration = Duration::from_secs(IDLE_TIMEOUT_SECS);
+
+const SESSION_TTL_SECS: u64 = 60 * 30;
+const SESSION_TTL: Duration = Duration::from_secs(SESSION_TTL_SECS);
 
 pub type Handler = fn(&Request, &Data) -> Response;
 
@@ -25,6 +27,8 @@ pub struct Data {
     pub path_value: HashMap<String, String>,
     pub query_value: HashMap<String, String>,
     pub header_value: HashMap<String, String>,
+    pub session_id: Option<String>,
+    pub is_new_session: bool,
 }
 
 pub struct Route {
@@ -39,6 +43,15 @@ pub struct Router {
     conns: HashMap<RawFd, Conn>,
     events: Vec<epoll_event>,
     listen_fd_to_port: HashMap<RawFd, u16>,
+    sessions: HashMap<String, Session>,
+}
+
+#[derive(Debug)]
+pub struct Session {
+    pub id: String,
+    pub created_at: Instant,
+    pub last_seen: Instant,
+    pub visits: u64,
 }
 
 #[derive(Debug)]
@@ -81,6 +94,7 @@ impl Router {
             conns,
             events,
             listen_fd_to_port,
+            sessions: HashMap::new(),
         }
     }
 
@@ -98,38 +112,59 @@ impl Router {
         });
     }
 
-    pub fn handle(&self, local_port: u16, req: &Request) -> Response {
-        let Some(routes) = self.routes.get(&local_port) else {
+    pub fn handle(&mut self, local_port: u16, req: &Request) -> Response {
+        let match_result = {
+            let Some(routes) = self.routes.get(&local_port) else {
+                return error_response(&req.version, StatusCode::NotFound);
+            };
+
+            let mut matched_path_but_wrong_method = false;
+            let mut found: Option<(Handler, HashMap<String, String>)> = None;
+
+            for route in routes {
+                let Some(path_value) = match_pattern(&route.pattern, &req.path) else {
+                    continue;
+                };
+
+                if !route.methods.iter().any(|m| *m == req.method) {
+                    matched_path_but_wrong_method = true;
+                    continue;
+                }
+
+                found = Some((route.handler, path_value));
+                break;
+            }
+
+            (found, matched_path_but_wrong_method)
+        };
+
+        let (found, matched_path_but_wrong_method) = match_result;
+        let Some((handler, path_value)) = found else {
+            if matched_path_but_wrong_method {
+                return error_response(&req.version, StatusCode::MethodNotAllowed);
+            }
             return error_response(&req.version, StatusCode::NotFound);
         };
 
-        let mut matched_path_but_wrong_method = false;
+        let now = Instant::now();
+        let (session_id, is_new_session) = resolve_session(&mut self.sessions, req, now);
 
-        for route in routes {
-            let Some(path_value) = match_pattern(&route.pattern, &req.path)
-            else {
-                continue;
-            };
+        let data = Data {
+            path_value,
+            query_value: parse_query(&req.query),
+            header_value: collect_headers(req),
+            session_id: session_id.clone(),
+            is_new_session,
+        };
 
-            if !route.methods.iter().any(|m| *m == req.method) {
-                matched_path_but_wrong_method = true;
-                continue;
-            }
+        let mut resp = handler(req, &data);
 
-            let data = Data {
-                path_value,
-                query_value: parse_query(&req.query),
-                header_value: collect_headers(req),
-            };
-
-            return (route.handler)(req, &data);
+        if is_new_session && let Some(sid) = session_id {
+            let cookie = format!("sid={sid}; Path=/; HttpOnly; SameSite=Lax");
+            resp.headers.insert("Set-Cookie", &cookie);
         }
 
-        if matched_path_but_wrong_method {
-            return error_response(&req.version, StatusCode::MethodNotAllowed);
-        }
-
-        error_response(&req.version, StatusCode::NotFound)
+        resp
     }
 
     pub fn handle_connections(&mut self) -> Result<(), io::Error> {
@@ -141,12 +176,7 @@ impl Router {
             };
 
             if let Some(&listen_port) = self.listen_fd_to_port.get(&fd) {
-                handle_listen_ready(
-                    self.epfd,
-                    fd,
-                    listen_port,
-                    &mut self.conns,
-                )?;
+                handle_listen_ready(self.epfd, fd, listen_port, &mut self.conns)?;
                 continue;
             }
 
@@ -166,8 +196,7 @@ impl Router {
             if (flags & (EPOLLOUT as u32)) == 0 {
                 continue;
             }
-            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns)
-            else {
+            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns) else {
                 continue;
             };
             eprintln!("write error fd={fd}: {e}");
@@ -185,39 +214,30 @@ impl Router {
             drop_conn(self.epfd, fd, &mut self.conns);
         }
 
+        cleanup_expired_sessions(&mut self.sessions, now);
+
         Ok(())
     }
 
-    fn handle_client_readable(
-        &mut self,
-        epfd: RawFd,
-        fd: RawFd,
-    ) -> io::Result<()> {
+    fn handle_client_readable(&mut self, epfd: RawFd, fd: RawFd) -> io::Result<()> {
         let mut buf = [0u8; 4096];
 
         loop {
             match recv_nonblocking(fd, &mut buf)? {
                 Some(0) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "peer closed",
-                    ));
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
                 }
                 Some(nread) => {
                     let req_bytes = {
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                "conn missing",
-                            )
+                            io::Error::new(io::ErrorKind::NotFound, "conn missing")
                         })?;
                         c.in_buf.extend_from_slice(&buf[..nread]);
                         c.last_activity = Instant::now();
 
                         if matches!(c.state, ConnState::ReadingHeaders) {
-                            find_header_end(&c.in_buf).map(|header_end| {
-                                (c.in_buf[..header_end].to_vec(), c.local_port)
-                            })
+                            find_header_end(&c.in_buf)
+                                .map(|header_end| (c.in_buf[..header_end].to_vec(), c.local_port))
                         } else {
                             None
                         }
@@ -230,20 +250,12 @@ impl Router {
                         };
 
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                "conn missing",
-                            )
+                            io::Error::new(io::ErrorKind::NotFound, "conn missing")
                         })?;
                         c.out_buf.extend_from_slice(&response.to_bytes());
                         c.state = ConnState::Responding;
 
-                        let mask = (EPOLLIN
-                            | EPOLLOUT
-                            | EPOLLRDHUP
-                            | EPOLLERR
-                            | EPOLLHUP)
-                            as u32;
+                        let mask = (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
                         epoll_mod(epfd, fd, mask)?;
                     }
                 }
@@ -274,10 +286,7 @@ fn create_epoll() -> io::Result<RawFd> {
     Ok(epfd)
 }
 
-fn epoll_wait_blocking(
-    epfd: RawFd,
-    events: &mut [epoll_event],
-) -> io::Result<usize> {
+fn epoll_wait_blocking(epfd: RawFd, events: &mut [epoll_event]) -> io::Result<usize> {
     loop {
         let n = unsafe {
             libc::epoll_wait(
@@ -339,9 +348,9 @@ fn handle_client_writable(
     let mut should_close = false;
 
     {
-        let c = conns.get_mut(&fd).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "conn missing")
-        })?;
+        let c = conns
+            .get_mut(&fd)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "conn missing"))?;
 
         while !c.out_buf.is_empty() {
             match send_nonblocking(fd, &c.out_buf)? {
@@ -419,10 +428,7 @@ fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
     })
 }
 
-fn match_pattern(
-    pattern: &str,
-    req_path: &str,
-) -> Option<HashMap<String, String>> {
+fn match_pattern(pattern: &str, req_path: &str) -> Option<HashMap<String, String>> {
     let p = pattern.trim_matches('/');
     let r = req_path.trim_matches('/');
 
@@ -492,10 +498,7 @@ fn collect_headers(req: &Request) -> HashMap<String, String> {
 
 // NOTE: helper function for stale connection sweeper
 // Captures both port and last_activity to log more informative message when dropping stale connections
-fn collect_timed_out_conns(
-    conns: &HashMap<RawFd, Conn>,
-    now: Instant,
-) -> Vec<(RawFd, u16)> {
+fn collect_timed_out_conns(conns: &HashMap<RawFd, Conn>, now: Instant) -> Vec<(RawFd, u16)> {
     let mut timed_out = Vec::new();
     for (fd, conn) in conns {
         if now.duration_since(conn.last_activity) > IDLE_TIMEOUT {
@@ -503,4 +506,68 @@ fn collect_timed_out_conns(
         }
     }
     timed_out
+}
+
+fn parse_cookie_header(cookie: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for part in cookie.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let (k, v) = match trimmed.split_once('=') {
+            Some((k, v)) => (k.trim(), v.trim()),
+            None => continue,
+        };
+        if !k.is_empty() {
+            out.insert(k.to_string(), v.to_string());
+        }
+    }
+    out
+}
+
+fn generate_session_id() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn resolve_session(
+    sessions: &mut HashMap<String, Session>,
+    req: &Request,
+    now: Instant,
+) -> (Option<String>, bool) {
+    let mut cookie_sid: Option<String> = None;
+
+    if let Some(raw_cookie) = req.headers.get("cookie") {
+        let cookies = parse_cookie_header(raw_cookie);
+        if let Some(sid) = cookies.get("sid") {
+            cookie_sid = Some(sid.clone());
+        }
+    }
+
+    if let Some(sid) = cookie_sid {
+        if let Some(sess) = sessions.get_mut(&sid) {
+            sess.last_seen = now;
+            sess.visits = sess.visits.saturating_add(1);
+            return (Some(sid), false);
+        }
+    }
+
+    let sid = generate_session_id();
+    sessions.insert(
+        sid.clone(),
+        Session {
+            id: sid.clone(),
+            created_at: now,
+            last_seen: now,
+            visits: 1,
+        },
+    );
+
+    (Some(sid), true)
+}
+
+fn cleanup_expired_sessions(sessions: &mut HashMap<String, Session>, now: Instant) {
+    sessions.retain(|_, s| now.duration_since(s.last_seen) <= SESSION_TTL);
 }
