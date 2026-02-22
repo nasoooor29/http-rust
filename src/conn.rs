@@ -38,18 +38,21 @@ impl Conn {
             return ReadOutcome::Pending;
         };
 
-        let content_length = match Self::parse_content_length(&self.in_buf[..header_end]) {
-            Ok(v) => v,
-            Err(reason) => {
-                return ReadOutcome::Error {
-                    status: StatusCode::BadRequest,
-                    reason,
-                };
-            }
-        };
+        let content_length =
+            match Self::parse_content_length(&self.in_buf[..header_end]) {
+                Ok(v) => v,
+                Err(reason) => {
+                    return ReadOutcome::Error {
+                        status: StatusCode::BadRequest,
+                        reason,
+                    };
+                }
+            };
 
         if content_length == 0 {
-            return ReadOutcome::Ready(self.build_pending_request(header_end, 0));
+            return ReadOutcome::Ready(
+                self.build_pending_request(header_end, 0),
+            );
         }
 
         self.state = ConnState::ReadingBody {
@@ -59,13 +62,19 @@ impl Conn {
         self.read_body(header_end, content_length)
     }
 
-    fn read_body(&mut self, header_end: usize, content_length: usize) -> ReadOutcome {
+    fn read_body(
+        &mut self,
+        header_end: usize,
+        content_length: usize,
+    ) -> ReadOutcome {
         let total_len = header_end + content_length;
         if self.in_buf.len() < total_len {
             return ReadOutcome::Pending;
         }
 
-        ReadOutcome::Ready(self.build_pending_request(header_end, content_length))
+        ReadOutcome::Ready(
+            self.build_pending_request(header_end, content_length),
+        )
     }
 
     fn build_pending_request(
@@ -116,10 +125,9 @@ impl Conn {
                 return Err("duplicate Content-Length header".to_string());
             }
 
-            let parsed = value
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| "Content-Length must be a positive integer".to_string())?;
+            let parsed = value.trim().parse::<usize>().map_err(|_| {
+                "Content-Length must be a positive integer".to_string()
+            })?;
             content_length = Some(parsed);
         }
 
