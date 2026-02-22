@@ -6,9 +6,7 @@ mod helpers;
 mod https;
 mod router;
 
-use crate::https::{
-    HttpMethod, Request, Response, StatusCode, response_with_body,
-};
+use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
 use crate::router::{Data, Router, error_response};
 
 fn main() {
@@ -22,20 +20,10 @@ fn main() {
     );
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
-    router.add_route(
-        8080,
-        "/health",
-        vec![HttpMethod::Get],
-        handle_public_health,
-    );
+    router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
-    router.add_route(
-        9090,
-        "/health",
-        vec![HttpMethod::Get],
-        handle_admin_health,
-    );
+    router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
 
     println!("listening on 8080, 9090");
     loop {
@@ -45,9 +33,8 @@ fn main() {
 
 fn handle_public_root(req: &Request, _data: &Data) -> Response {
     let host = req.headers.get("host").unwrap_or("unknown-host");
-    let body = format!(
-        "<html><body><h1>Public</h1><p>Host: {host}</p><p>Port: 8080</p></body></html>"
-    );
+    let body =
+        format!("<html><body><h1>Public</h1><p>Host: {host}</p><p>Port: 8080</p></body></html>");
 
     response_with_body(
         &req.version,
@@ -99,23 +86,12 @@ fn handle_file_by_name(req: &Request, data: &Data) -> Response {
             b"missing file name".to_vec(),
         );
     };
-
-    let path = match file_path_from_name(name) {
-        Ok(path) => path,
-        Err(msg) => {
-            return response_with_body(
-                &req.version,
-                StatusCode::BadRequest,
-                "text/plain; charset=utf-8",
-                msg.into_bytes(),
-            );
-        }
-    };
+    println!("handling file request for name: {name}");
 
     match req.method {
-        HttpMethod::Get => handle_file_get(req, &path),
-        HttpMethod::Post => handle_file_post(req, &path),
-        HttpMethod::Delete => handle_file_delete(req, &path),
+        HttpMethod::Get => handle_file_get(req, Path::new(name)),
+        HttpMethod::Post => handle_file_post(req, Path::new(name)),
+        HttpMethod::Delete => handle_file_delete(req, Path::new(name)),
         _ => error_response(&req.version, StatusCode::MethodNotAllowed),
     }
 }
