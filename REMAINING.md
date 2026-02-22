@@ -2,10 +2,10 @@ Based on the current code in `src/main.rs`, `src/router.rs`, `src/https.rs`, and
 
 **P0 (must do first, project-blocking)**
 - NASER:
-    - [ ] Implement real request-body handling (currently only headers are parsed; `body` is always empty), including `Content-Length` and full read state machine in `src/router.rs:174` and `src/router.rs:368`.
-        - [ ] Implement file uploads and retrieval validation (upload then GET back uncorrupted).
-    - [ ] Add chunked request support (`Transfer-Encoding: chunked`) and ensure CGI works with both chunked/unchunked bodies (explicit audit point).
-    - [ ] Implement cookies + session system (explicit mandatory requirement and audit checkpoint).
+  - [x] Implement real request-body handling (currently only headers are parsed; `body` is always empty), including `Content-Length` and full read state machine in `src/router.rs:174` and `src/router.rs:368`.
+    - [ ] Implement file uploads and retrieval validation (upload then GET back uncorrupted).
+  - [ ] Add chunked request support (`Transfer-Encoding: chunked`) and ensure CGI works with both chunked/unchunked bodies (explicit audit point).
+  - [ ] Remove crash paths: `unwrap()` in server loop (`src/main.rs:31`) and listener setup unwraps (`src/router.rs:51`, `src/router.rs:55`) violate “server never crashes”.
 
 - EB:
     - [ ] Implement `POST` and `DELETE` behavior end-to-end (routing, filesystem effects where needed, correct status codes), not just enum parsing in `src/https.rs:4`.
