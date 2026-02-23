@@ -38,9 +38,7 @@ impl Conn {
                 header_end,
                 content_length,
             } => self.read_body_content_length(header_end, content_length),
-            ConnState::ReadingBodyChunked { header_end } => {
-                self.read_body_chunked(header_end)
-            }
+            ConnState::ReadingBodyChunked { header_end } => self.read_body_chunked(header_end),
             ConnState::Responding => ReadOutcome::Pending,
         }
     }
@@ -50,8 +48,7 @@ impl Conn {
             return ReadOutcome::Pending;
         };
 
-        let framing = match Self::parse_body_framing(&self.in_buf[..header_end])
-        {
+        let framing = match Self::parse_body_framing(&self.in_buf[..header_end]) {
             Ok(v) => v,
             Err(reason) => {
                 return ReadOutcome::Error {
@@ -62,9 +59,9 @@ impl Conn {
         };
 
         match framing {
-            BodyFraming::ContentLength(0) => ReadOutcome::Ready(
-                self.build_pending_request(header_end, Vec::new()),
-            ),
+            BodyFraming::ContentLength(0) => {
+                ReadOutcome::Ready(self.build_pending_request(header_end, Vec::new()))
+            }
             BodyFraming::ContentLength(content_length) => {
                 self.state = ConnState::ReadingBodyContentLength {
                     header_end,
@@ -89,34 +86,28 @@ impl Conn {
             return ReadOutcome::Pending;
         }
 
-        ReadOutcome::Ready(self.build_pending_request(
-            header_end,
-            self.in_buf[header_end..total_len].to_vec(),
-        ))
+        ReadOutcome::Ready(
+            self.build_pending_request(header_end, self.in_buf[header_end..total_len].to_vec()),
+        )
     }
 
     fn read_body_chunked(&mut self, header_end: usize) -> ReadOutcome {
         let body_and_trailers = &self.in_buf[header_end..];
-        let (decoded_body, _consumed) =
-            match Self::decode_chunked_body(body_and_trailers) {
-                Ok(Some(v)) => v,
-                Ok(None) => return ReadOutcome::Pending,
-                Err(reason) => {
-                    return ReadOutcome::Error {
-                        status: StatusCode::BadRequest,
-                        reason,
-                    };
-                }
-            };
+        let (decoded_body, _consumed) = match Self::decode_chunked_body(body_and_trailers) {
+            Ok(Some(v)) => v,
+            Ok(None) => return ReadOutcome::Pending,
+            Err(reason) => {
+                return ReadOutcome::Error {
+                    status: StatusCode::BadRequest,
+                    reason,
+                };
+            }
+        };
 
         ReadOutcome::Ready(self.build_pending_request(header_end, decoded_body))
     }
 
-    fn build_pending_request(
-        &mut self,
-        header_end: usize,
-        body_bytes: Vec<u8>,
-    ) -> PendingRequest {
+    fn build_pending_request(&mut self, header_end: usize, body_bytes: Vec<u8>) -> PendingRequest {
         PendingRequest {
             header_bytes: self.in_buf[..header_end].to_vec(),
             body_bytes,
@@ -155,9 +146,7 @@ impl Conn {
             if !name.eq_ignore_ascii_case("Content-Length") {
                 if name.eq_ignore_ascii_case("Transfer-Encoding") {
                     if transfer_encoding.is_some() {
-                        return Err(
-                            "duplicate Transfer-Encoding header".to_string()
-                        );
+                        return Err("duplicate Transfer-Encoding header".to_string());
                     }
                     transfer_encoding = Some(value.trim().to_ascii_lowercase());
                 }
@@ -168,18 +157,16 @@ impl Conn {
                 return Err("duplicate Content-Length header".to_string());
             }
 
-            let parsed = value.trim().parse::<usize>().map_err(|_| {
-                "Content-Length must be a non-negative integer".to_string()
-            })?;
+            let parsed = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| "Content-Length must be a non-negative integer".to_string())?;
             content_length = Some(parsed);
         }
 
         if let Some(te) = transfer_encoding {
             if content_length.is_some() {
-                return Err(
-                    "Transfer-Encoding and Content-Length cannot be combined"
-                        .to_string(),
-                );
+                return Err("Transfer-Encoding and Content-Length cannot be combined".to_string());
             }
 
             let codings: Vec<&str> = te
@@ -189,15 +176,11 @@ impl Conn {
                 .collect();
 
             if codings.is_empty() {
-                return Err(
-                    "Transfer-Encoding header cannot be empty".to_string()
-                );
+                return Err("Transfer-Encoding header cannot be empty".to_string());
             }
 
             if codings.iter().any(|c| *c != "chunked") {
-                return Err(
-                    "only chunked Transfer-Encoding is supported".to_string()
-                );
+                return Err("only chunked Transfer-Encoding is supported".to_string());
             }
 
             return Ok(BodyFraming::Chunked);
@@ -206,24 +189,19 @@ impl Conn {
         Ok(BodyFraming::ContentLength(content_length.unwrap_or(0)))
     }
 
-    fn decode_chunked_body(
-        raw: &[u8],
-    ) -> Result<Option<(Vec<u8>, usize)>, String> {
+    fn decode_chunked_body(raw: &[u8]) -> Result<Option<(Vec<u8>, usize)>, String> {
         let mut pos = 0usize;
         let mut out = Vec::new();
 
         loop {
-            let Some(line_end_rel) =
-                raw[pos..].windows(2).position(|w| w == b"\r\n")
-            else {
+            let Some(line_end_rel) = raw[pos..].windows(2).position(|w| w == b"\r\n") else {
                 return Ok(None);
             };
             let line_end = pos + line_end_rel;
             let size_line = &raw[pos..line_end];
 
-            let size_text = std::str::from_utf8(size_line).map_err(|_| {
-                "chunk size line is not valid UTF-8".to_string()
-            })?;
+            let size_text = std::str::from_utf8(size_line)
+                .map_err(|_| "chunk size line is not valid UTF-8".to_string())?;
             let size_token = size_text
                 .split_once(';')
                 .map(|(n, _)| n)
@@ -234,10 +212,8 @@ impl Conn {
                 return Err("chunk size is missing".to_string());
             }
 
-            let chunk_size =
-                usize::from_str_radix(size_token, 16).map_err(|_| {
-                    "chunk size is not valid hexadecimal".to_string()
-                })?;
+            let chunk_size = usize::from_str_radix(size_token, 16)
+                .map_err(|_| "chunk size is not valid hexadecimal".to_string())?;
 
             pos = line_end + 2;
 
@@ -249,9 +225,7 @@ impl Conn {
             pos += chunk_size;
 
             if &raw[pos..pos + 2] != b"\r\n" {
-                return Err(
-                    "chunk data is not terminated with CRLF".to_string()
-                );
+                return Err("chunk data is not terminated with CRLF".to_string());
             }
             pos += 2;
 
@@ -260,9 +234,7 @@ impl Conn {
             }
 
             loop {
-                let Some(line_end_rel) =
-                    raw[pos..].windows(2).position(|w| w == b"\r\n")
-                else {
+                let Some(line_end_rel) = raw[pos..].windows(2).position(|w| w == b"\r\n") else {
                     return Ok(None);
                 };
 

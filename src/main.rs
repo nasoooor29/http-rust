@@ -36,7 +36,10 @@ fn main() {
 
     println!("listening on 8080, 9090");
     loop {
-        router.handle_connections().unwrap();
+        if let Err(err) = router.handle_connections() {
+            eprintln!("server loop error: {err}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 }
 

@@ -93,6 +93,12 @@ pub fn epoll_del(epfd: RawFd, fd: RawFd) {
     }
 }
 
+pub fn close_fd(fd: RawFd) {
+    unsafe {
+        libc::close(fd);
+    }
+}
+
 pub fn last_err(ctx: &str) -> io::Error {
     io::Error::new(
         io::Error::last_os_error().kind(),
@@ -126,7 +132,7 @@ pub fn create_listen_socket(port: u16) -> io::Result<RawFd> {
         )
     };
     if rc < 0 {
-        unsafe { libc::close(fd) };
+        close_fd(fd);
         return Err(last_err("libc::setsockopt(SO_REUSEADDR)"));
     }
 
@@ -147,13 +153,13 @@ pub fn create_listen_socket(port: u16) -> io::Result<RawFd> {
         )
     };
     if rc < 0 {
-        unsafe { libc::close(fd) };
+        close_fd(fd);
         return Err(last_err("bind"));
     }
 
     let rc = unsafe { libc::listen(fd, 1024) };
     if rc < 0 {
-        unsafe { libc::close(fd) };
+        close_fd(fd);
         return Err(last_err("listen"));
     }
 
