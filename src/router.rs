@@ -50,14 +50,27 @@ pub enum ReadOutcome {
 
 impl Router {
     pub fn new_on_ports(ports: &[u16]) -> Self {
-        let epfd = create_epoll().unwrap();
+        let epfd = match create_epoll() {
+            Ok(fd) => fd,
+            Err(err) => {
+                eprintln!("could not create epoll instance: {err}");
+                -1
+            }
+        };
         let mut listen_fd_to_port: HashMap<RawFd, u16> = HashMap::new();
 
         for &port in ports {
             match create_listen_socket(port) {
                 Ok(listen_fd) => {
                     println!("listening on 0.0.0.0:{port}");
-                    epoll_add(epfd, listen_fd, EPOLLIN as u32).unwrap();
+                    if let Err(err) = epoll_add(epfd, listen_fd, EPOLLIN as u32)
+                    {
+                        eprintln!(
+                            "could not register listener on port {port} in epoll: {err}"
+                        );
+                        close_fd(listen_fd);
+                        continue;
+                    }
                     listen_fd_to_port.insert(listen_fd, port);
                 }
                 Err(err) => {
@@ -239,7 +252,7 @@ impl Router {
     fn drop_conn(&mut self, fd: RawFd) {
         epoll_del(self.epfd, fd);
         self.conns.remove(&fd);
-        unsafe { libc::close(fd) };
+        close_fd(fd);
     }
 
     fn handle_client_readable(&mut self, fd: RawFd) -> io::Result<()> {
