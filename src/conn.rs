@@ -217,19 +217,18 @@ impl Conn {
 
             pos = line_end + 2;
 
-            if raw.len() < pos + chunk_size + 2 {
-                return Ok(None);
-            }
-
-            out.extend_from_slice(&raw[pos..pos + chunk_size]);
-            pos += chunk_size;
-
-            if &raw[pos..pos + 2] != b"\r\n" {
-                return Err("chunk data is not terminated with CRLF".to_string());
-            }
-            pos += 2;
-
             if chunk_size != 0 {
+                if raw.len() < pos + chunk_size + 2 {
+                    return Ok(None);
+                }
+
+                out.extend_from_slice(&raw[pos..pos + chunk_size]);
+                pos += chunk_size;
+
+                if &raw[pos..pos + 2] != b"\r\n" {
+                    return Err("chunk data is not terminated with CRLF".to_string());
+                }
+                pos += 2;
                 continue;
             }
 
@@ -247,5 +246,28 @@ impl Conn {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Conn;
+
+    #[test]
+    fn decode_chunked_body_accepts_empty_trailers() {
+        let raw = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+        let decoded = Conn::decode_chunked_body(raw)
+            .expect("chunked body should parse")
+            .expect("chunked body should be complete");
+
+        assert_eq!(decoded.0, b"hello world");
+        assert_eq!(decoded.1, raw.len());
+    }
+
+    #[test]
+    fn decode_chunked_body_waits_for_final_crlf() {
+        let raw = b"5\r\nhello\r\n0\r\n";
+        let decoded = Conn::decode_chunked_body(raw).expect("should not error");
+        assert!(decoded.is_none());
     }
 }
