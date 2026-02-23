@@ -7,7 +7,9 @@ mod helpers;
 mod https;
 mod router;
 
-use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
+use crate::https::{
+    HttpMethod, Request, Response, StatusCode, response_with_body,
+};
 use crate::router::Router;
 use crate::router::{Data, error_response};
 
@@ -29,10 +31,20 @@ fn main() {
     );
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
-    router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
+    router.add_route(
+        8080,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_public_health,
+    );
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
-    router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
+    router.add_route(
+        9090,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_admin_health,
+    );
 
     println!("listening on 8080, 9090");
     loop {
@@ -45,8 +57,9 @@ fn main() {
 
 fn handle_public_root(req: &Request, _data: &Data) -> Response {
     let host = req.headers.get("host").unwrap_or("unknown-host");
-    let body =
-        format!("<html><body><h1>Public</h1><p>Host: {host}</p><p>Port: 8080</p></body></html>");
+    let body = format!(
+        "<html><body><h1>Public</h1><p>Host: {host}</p><p>Port: 8080</p></body></html>"
+    );
 
     response_with_body(
         &req.version,
