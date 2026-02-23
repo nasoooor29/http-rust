@@ -5,6 +5,8 @@ use std::os::fd::RawFd;
 
 use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
 
+use crate::conn::Conn;
+use crate::conn::ConnState;
 use crate::helpers::{
     accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod,
     last_err, recv_nonblocking, send_nonblocking, should_drop,
@@ -34,35 +36,36 @@ pub struct Router {
     events: Vec<epoll_event>,
     listen_fd_to_port: HashMap<RawFd, u16>,
 }
-
-#[derive(Debug)]
-pub struct Conn {
-    local_port: u16,
-    in_buf: Vec<u8>,
-    out_buf: Vec<u8>,
-    state: ConnState,
+pub struct PendingRequest {
+    pub header_bytes: Vec<u8>,
+    pub body_bytes: Vec<u8>,
+    pub local_port: u16,
 }
 
-#[derive(Debug)]
-enum ConnState {
-    ReadingHeaders,
-    Responding,
+pub enum ReadOutcome {
+    Pending,
+    Ready(PendingRequest),
+    Error { status: StatusCode, reason: String },
 }
 
 impl Router {
-    pub fn new(port: u16) -> Self {
-        Self::new_on_ports(&[port])
-    }
-
     pub fn new_on_ports(ports: &[u16]) -> Self {
         let epfd = create_epoll().unwrap();
         let mut listen_fd_to_port: HashMap<RawFd, u16> = HashMap::new();
 
         for &port in ports {
-            let listen_fd = create_listen_socket(port).unwrap();
-            println!("listening on 0.0.0.0:{port}");
-            epoll_add(epfd, listen_fd, EPOLLIN as u32).unwrap();
-            listen_fd_to_port.insert(listen_fd, port);
+            match create_listen_socket(port) {
+                Ok(listen_fd) => {
+                    println!("listening on 0.0.0.0:{port}");
+                    epoll_add(epfd, listen_fd, EPOLLIN as u32).unwrap();
+                    listen_fd_to_port.insert(listen_fd, port);
+                }
+                Err(err) => {
+                    println!(
+                        "could not create a listener on port: {port}, error: {err}"
+                    );
+                }
+            };
         }
 
         let conns: HashMap<RawFd, Conn> = HashMap::new();
@@ -134,48 +137,112 @@ impl Router {
             };
 
             if let Some(&listen_port) = self.listen_fd_to_port.get(&fd) {
-                handle_listen_ready(
-                    self.epfd,
-                    fd,
-                    listen_port,
-                    &mut self.conns,
-                )?;
+                self.handle_listen_ready(fd, listen_port)?;
                 continue;
             }
 
             if should_drop(flags) {
-                drop_conn(self.epfd, fd, &mut self.conns);
+                self.drop_conn(fd);
                 continue;
             }
 
             if (flags & (EPOLLIN as u32)) != 0
-                && let Err(e) = self.handle_client_readable(self.epfd, fd)
+                && let Err(e) = self.handle_client_readable(fd)
             {
                 eprintln!("read error fd={fd}: {e}");
-                drop_conn(self.epfd, fd, &mut self.conns);
+                self.drop_conn(fd);
                 continue;
             }
 
             if (flags & (EPOLLOUT as u32)) == 0 {
                 continue;
             }
-            let Err(e) = handle_client_writable(self.epfd, fd, &mut self.conns)
-            else {
+            let Err(e) = self.handle_client_writable(fd) else {
                 continue;
             };
             eprintln!("write error fd={fd}: {e}");
-            drop_conn(self.epfd, fd, &mut self.conns);
+            self.drop_conn(fd);
             continue;
         }
 
         Ok(())
     }
 
-    fn handle_client_readable(
+    fn handle_listen_ready(
         &mut self,
-        epfd: RawFd,
-        fd: RawFd,
+        // epfd: RawFd,
+        listen_fd: RawFd,
+        listen_port: u16,
+        // conns: &mut HashMap<RawFd, Conn>,
     ) -> io::Result<()> {
+        loop {
+            match accept_nonblocking(listen_fd) {
+                Ok(Some(client_fd)) => {
+                    self.conns.insert(
+                        client_fd,
+                        Conn {
+                            local_port: listen_port,
+                            in_buf: Vec::new(),
+                            out_buf: Vec::new(),
+                            state: ConnState::ReadingHeaders,
+                        },
+                    );
+
+                    let mask =
+                        (EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
+                    epoll_add(self.epfd, client_fd, mask)?;
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("accept error: {e}");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_client_writable(
+        &mut self,
+        // epfd: RawFd,
+        fd: RawFd,
+        // conns: &mut HashMap<RawFd, Conn>,
+    ) -> io::Result<()> {
+        let mut should_close = false;
+
+        {
+            let c = self.conns.get_mut(&fd).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "conn missing")
+            })?;
+
+            while !c.out_buf.is_empty() {
+                match send_nonblocking(fd, &c.out_buf)? {
+                    Some(nsent) => {
+                        c.out_buf.drain(..nsent);
+                    }
+                    None => break,
+                }
+            }
+
+            if c.out_buf.is_empty() {
+                should_close = true;
+            }
+        }
+
+        if should_close {
+            self.drop_conn(fd);
+        }
+
+        Ok(())
+    }
+
+    fn drop_conn(&mut self, fd: RawFd) {
+        epoll_del(self.epfd, fd);
+        self.conns.remove(&fd);
+        unsafe { libc::close(fd) };
+    }
+
+    fn handle_client_readable(&mut self, fd: RawFd) -> io::Result<()> {
         let mut buf = [0u8; 4096];
 
         loop {
@@ -187,47 +254,47 @@ impl Router {
                     ));
                 }
                 Some(nread) => {
-                    let req_bytes = {
+                    let outcome = {
                         let c = self.conns.get_mut(&fd).ok_or_else(|| {
                             io::Error::new(
                                 io::ErrorKind::NotFound,
                                 "conn missing",
                             )
                         })?;
-                        c.in_buf.extend_from_slice(&buf[..nread]);
+                        c.read_outcome(&buf[..nread])
+                    };
 
-                        if matches!(c.state, ConnState::ReadingHeaders) {
-                            find_header_end(&c.in_buf).map(|header_end| {
-                                (c.in_buf[..header_end].to_vec(), c.local_port)
-                            })
-                        } else {
-                            None
+                    let response = match outcome {
+                        ReadOutcome::Pending => continue,
+                        ReadOutcome::Ready(parts) => {
+                            match parse_request(
+                                &parts.header_bytes,
+                                &parts.body_bytes,
+                            ) {
+                                Ok(req) => self.handle(parts.local_port, &req),
+                                Err((status, reason)) => {
+                                    eprintln!("request rejected: {reason}");
+                                    error_response("HTTP/1.1", status)
+                                }
+                            }
+                        }
+                        ReadOutcome::Error { status, reason } => {
+                            eprintln!("request rejected: {reason}");
+                            error_response("HTTP/1.1", status)
                         }
                     };
 
-                    if let Some((req_bytes, local_port)) = req_bytes {
-                        let response = match parse_request(&req_bytes) {
-                            Ok(req) => self.handle(local_port, &req),
-                            Err(status) => error_response("HTTP/1.1", status),
-                        };
+                    let c = self.conns.get_mut(&fd).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "conn missing")
+                    })?;
+                    c.out_buf.extend_from_slice(&response.to_bytes());
+                    c.state = ConnState::Responding;
 
-                        let c = self.conns.get_mut(&fd).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::NotFound,
-                                "conn missing",
-                            )
-                        })?;
-                        c.out_buf.extend_from_slice(&response.to_bytes());
-                        c.state = ConnState::Responding;
-
-                        let mask = (EPOLLIN
-                            | EPOLLOUT
-                            | EPOLLRDHUP
-                            | EPOLLERR
-                            | EPOLLHUP)
+                    let mask =
+                        (EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLHUP)
                             as u32;
-                        epoll_mod(epfd, fd, mask)?;
-                    }
+                    epoll_mod(self.epfd, fd, mask)?;
+                    break;
                 }
                 None => break,
             }
@@ -236,7 +303,6 @@ impl Router {
         Ok(())
     }
 }
-
 pub fn error_response(version: &str, status: StatusCode) -> Response {
     let reason = status.reason();
     let body = format!(
@@ -275,97 +341,45 @@ fn epoll_wait_blocking(
     }
 }
 
-fn handle_listen_ready(
-    epfd: RawFd,
-    listen_fd: RawFd,
-    listen_port: u16,
-    conns: &mut HashMap<RawFd, Conn>,
-) -> io::Result<()> {
-    loop {
-        match accept_nonblocking(listen_fd) {
-            Ok(Some(client_fd)) => {
-                conns.insert(
-                    client_fd,
-                    Conn {
-                        local_port: listen_port,
-                        in_buf: Vec::new(),
-                        out_buf: Vec::new(),
-                        state: ConnState::ReadingHeaders,
-                    },
-                );
+fn parse_request(
+    header_bytes: &[u8],
+    body: &[u8],
+) -> Result<Request, (StatusCode, String)> {
+    let bad_request =
+        |reason: &str| (StatusCode::BadRequest, reason.to_string());
 
-                let mask = (EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLHUP) as u32;
-                epoll_add(epfd, client_fd, mask)?;
-            }
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("accept error: {e}");
-                break;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn handle_client_writable(
-    epfd: RawFd,
-    fd: RawFd,
-    conns: &mut HashMap<RawFd, Conn>,
-) -> io::Result<()> {
-    let mut should_close = false;
-
-    {
-        let c = conns.get_mut(&fd).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "conn missing")
-        })?;
-
-        while !c.out_buf.is_empty() {
-            match send_nonblocking(fd, &c.out_buf)? {
-                Some(nsent) => {
-                    c.out_buf.drain(..nsent);
-                }
-                None => break,
-            }
-        }
-
-        if c.out_buf.is_empty() {
-            should_close = true;
-        }
-    }
-
-    if should_close {
-        drop_conn(epfd, fd, conns);
-    }
-
-    Ok(())
-}
-
-fn drop_conn(epfd: RawFd, fd: RawFd, conns: &mut HashMap<RawFd, Conn>) {
-    epoll_del(epfd, fd);
-    conns.remove(&fd);
-    unsafe { libc::close(fd) };
-}
-
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
-}
-
-fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
-    let text = std::str::from_utf8(buf).map_err(|_| StatusCode::BadRequest)?;
+    let text = std::str::from_utf8(header_bytes)
+        .map_err(|_| bad_request("request headers are not valid UTF-8"))?;
     let mut lines = text.split("\r\n");
 
-    let request_line = lines.next().ok_or(StatusCode::BadRequest)?;
+    let request_line = lines
+        .next()
+        .ok_or_else(|| bad_request("missing request line"))?;
     let mut parts = request_line.split_whitespace();
-    let method = parts.next().ok_or(StatusCode::BadRequest)?;
-    let raw_path = parts.next().ok_or(StatusCode::BadRequest)?;
-    let version = parts.next().ok_or(StatusCode::BadRequest)?;
+    let method = parts
+        .next()
+        .ok_or_else(|| bad_request("missing HTTP method"))?;
+    let raw_path = parts
+        .next()
+        .ok_or_else(|| bad_request("missing request path"))?;
+    let version = parts
+        .next()
+        .ok_or_else(|| bad_request("missing HTTP version"))?;
 
     if parts.next().is_some() {
-        return Err(StatusCode::BadRequest);
+        return Err(bad_request("request line has extra fields"));
     }
 
     if version != "HTTP/1.1" && version != "HTTP/1.0" {
-        return Err(StatusCode::VersionNotSupported);
+        return Err((
+            StatusCode::VersionNotSupported,
+            "unsupported HTTP version".to_string(),
+        ));
+    }
+
+    let method = HttpMethod::from_str(method);
+    if matches!(method, HttpMethod::Post) && body.is_empty() {
+        return Err(bad_request("POST request requires a non-empty body"));
     }
 
     let mut headers = crate::https::HeaderMap::default();
@@ -385,12 +399,12 @@ fn parse_request(buf: &[u8]) -> Result<Request, StatusCode> {
         .unwrap_or((raw_path.to_string(), String::new()));
 
     Ok(Request {
-        method: HttpMethod::from_str(method),
+        method,
         path,
         query,
         version: version.to_string(),
         headers,
-        body: Vec::new(),
+        body: body.to_vec(),
     })
 }
 

@@ -2,6 +2,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+mod conn;
 mod helpers;
 mod https;
 mod router;
@@ -17,6 +18,13 @@ fn main() {
         "/files/:name",
         vec![HttpMethod::Get, HttpMethod::Post, HttpMethod::Delete],
         handle_file_by_name,
+    );
+    router.add_route(8080, "/upload", vec![HttpMethod::Post], handle_upload);
+    router.add_route(
+        8080,
+        "/upload_thing",
+        vec![HttpMethod::Get],
+        handle_get_uploaded,
     );
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
@@ -177,16 +185,33 @@ fn handle_file_delete(req: &Request, path: &Path) -> Response {
     }
 }
 
-fn file_path_from_name(name: &str) -> Result<PathBuf, String> {
-    if name.is_empty() {
-        return Err("empty file name".to_string());
-    }
-    if name == "." || name == ".." || name.contains("..") {
-        return Err("invalid file name".to_string());
-    }
-    if name.contains('/') || name.contains('\\') {
-        return Err("nested paths are not allowed".to_string());
-    }
+fn handle_upload(req: &Request, _data: &Data) -> Response {
+    println!(
+        "received upload: {} bytes\n{}",
+        req.body.len(),
+        String::from_utf8_lossy(&req.body)
+    );
+    // save it to file for demonstration purposes
+    std::fs::write("uploaded", &req.body).unwrap();
 
-    Ok(PathBuf::from("data").join(name))
+    response_with_body(
+        &req.version,
+        StatusCode::Ok,
+        "text/plain; charset=utf-8",
+        "ok".to_string().into_bytes(),
+    )
+}
+fn handle_get_uploaded(req: &Request, _data: &Data) -> Response {
+    println!("  handling get uploaded");
+    let body = match std::fs::read("uploaded") {
+        Ok(bytes) => bytes,
+        Err(_) => b"no uploaded file".to_vec(),
+    };
+
+    response_with_body(
+        &req.version,
+        StatusCode::Ok,
+        "text/plain; charset=utf-8",
+        body,
+    )
 }
