@@ -8,7 +8,7 @@ use libc::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT, EPOLLRDHUP, epoll_event};
 use crate::conn::Conn;
 use crate::conn::ConnState;
 use crate::helpers::{
-    accept_nonblocking, create_listen_socket, epoll_add, epoll_del, epoll_mod, last_err,
+    accept_nonblocking, close_fd, create_listen_socket, epoll_add, epoll_del, epoll_mod, last_err,
     recv_nonblocking, send_nonblocking, should_drop,
 };
 use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
