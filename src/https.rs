@@ -22,6 +22,8 @@ impl HttpMethod {
 #[derive(Debug, Clone, Copy)]
 pub enum StatusCode {
     Ok,
+    Created,
+    NoContent,
     BadRequest,
     Forbidden,
     NotFound,
@@ -36,6 +38,8 @@ impl StatusCode {
         match self {
             StatusCode::Ok => 200,
             StatusCode::BadRequest => 400,
+            StatusCode::Created => 201,
+            StatusCode::NoContent => 204,
             StatusCode::Forbidden => 403,
             StatusCode::NotFound => 404,
             StatusCode::MethodNotAllowed => 405,
@@ -50,6 +54,8 @@ impl StatusCode {
             StatusCode::Ok => "OK",
             StatusCode::BadRequest => "Bad Request",
             StatusCode::Forbidden => "Forbidden",
+            StatusCode::Created => "Created",
+            StatusCode::NoContent => "No Content",
             StatusCode::NotFound => "Not Found",
             StatusCode::MethodNotAllowed => "Method Not Allowed",
             StatusCode::PayloadTooLarge => "Payload Too Large",
@@ -86,6 +92,7 @@ impl HeaderMap {
 pub struct Request {
     pub method: HttpMethod,
     pub path: String,
+    pub query: String,
     pub version: String,
     pub headers: HeaderMap,
     pub body: Vec<u8>,
