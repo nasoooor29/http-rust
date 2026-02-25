@@ -7,8 +7,10 @@ mod helpers;
 mod https;
 mod router;
 
-use crate::https::{response_with_body, HttpMethod, Request, Response, StatusCode};
-use crate::router::{error_response, Data, Router};
+use crate::https::{
+    HttpMethod, Request, Response, StatusCode, response_with_body,
+};
+use crate::router::{Data, Router, error_response};
 
 fn main() {
     let mut router = Router::new_on_ports(&[8080, 9090]);
@@ -21,7 +23,12 @@ fn main() {
     );
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
-    router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
+    router.add_route(
+        8080,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_public_health,
+    );
     router.add_route(8080, "/upload", vec![HttpMethod::Post], handle_upload);
     router.add_route(
         8080,
@@ -31,7 +38,12 @@ fn main() {
     );
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
-    router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
+    router.add_route(
+        9090,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_admin_health,
+    );
 
     println!("listening on 8080, 9090");
     loop {
