@@ -23,10 +23,6 @@ fn main() {
 
     info!("Starting server...");
     info!("Server started on ports 8080 and 9090");
-    loop {
-        if let Err(err) = router.handle_connections() {
-            eprintln!("server loop error: {err}");
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-    }
+    router.listen_and_serve()
 }
+

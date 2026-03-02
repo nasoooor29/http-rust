@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::log;
+use std::collections::HashMap;
 use std::mem;
 use std::os::fd::RawFd;
 use std::sync::Arc;
@@ -179,5 +179,14 @@ impl Router {
         }
 
         resp
+    }
+
+    pub fn listen_and_serve(&mut self) {
+        loop {
+            if let Err(err) = self.handle_connections() {
+                eprintln!("server loop error: {err}");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
     }
 }
