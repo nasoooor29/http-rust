@@ -7,7 +7,9 @@ mod helpers;
 mod https;
 mod router;
 
-use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
+use crate::https::{
+    HttpMethod, Request, Response, StatusCode, response_with_body,
+};
 use crate::router::{Data, Router, error_response};
 
 fn main() {
@@ -21,17 +23,28 @@ fn main() {
     );
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
-    router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
+    router.add_route(
+        8080,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_public_health,
+    );
     router.add_route(8080, "/upload", vec![HttpMethod::Post], handle_upload);
+
     router.add_route(
         8080,
         "/upload_thing",
         vec![HttpMethod::Get],
-        handle_get_uploaded,
+        file_server_factory(true, "data".to_string()),
     );
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
-    router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
+    router.add_route(
+        9090,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_admin_health,
+    );
 
     println!("listening on 8080, 9090");
     loop {
@@ -120,19 +133,27 @@ fn handle_upload(req: &Request, _data: &Data) -> Response {
     )
 }
 
-fn handle_get_uploaded(req: &Request, _data: &Data) -> Response {
-    println!("  handling get uploaded");
-    let body = match fs::read("uploaded") {
-        Ok(bytes) => bytes,
-        Err(_) => b"no uploaded file".to_vec(),
-    };
+fn file_server_factory(
+    with_listing: bool,
+    dir_or_file: String,
+) -> impl Fn(&Request, &Data) -> Response + Send + Sync {
+    move |req: &Request, _data: &Data| -> Response {
+        println!("  handling get uploaded");
+        let body = match fs::read(&dir_or_file) {
+            Ok(bytes) => bytes,
+            Err(_) => b"no uploaded file".to_vec(),
+        };
+        if with_listing {
+            println!("  file content:\n{}", String::from_utf8_lossy(&body));
+        }
 
-    response_with_body(
-        &req.version,
-        StatusCode::Ok,
-        "text/plain; charset=utf-8",
-        body,
-    )
+        response_with_body(
+            &req.version,
+            StatusCode::Ok,
+            "text/plain; charset=utf-8",
+            body,
+        )
+    }
 }
 
 fn handle_file_by_name(req: &Request, data: &Data) -> Response {
