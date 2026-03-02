@@ -1,26 +1,45 @@
 {
-  "ports": {
-    ":8080": {
-      "type": "file server",
-      "root": "./website1",
-      "sizeLimit": "1024",
-      "log": true,
-      "defaultPages": {
-        "404": "404.html",
-        "403": "403.html"
-      },
-      "logLevel": "info"
+  "$schema": "./schema.json",
+  ":8080": {
+    "type": "file server",
+    "root": "./website1",
+    "sizeLimit": 1024,
+    "errorPages": {
+      "404": "404.html",
+      "500": "500.html"
     },
-    ":8081": {
-      "type": "file server",
-      "root": "./website2",
-      "log": true
-    },
-    ":8082": {
-      "type": "proxy",
-      "target": "http://localhost:3000",
-      "log": true,
-      "logLevel": "debug"
-    }
+    "directoryListing": true
+  },
+  ":8081": {
+    "type": "file server",
+    "root": "./website2",
+    "defaultFile": "index.html",
+    "directoryListing": true
+  },
+
+  ":8081/upload": {
+    "type": "file server",
+    "root": "./website2/uploads",
+    "sizeLimit": 1024,
+    "allowed_verbs": ["POST"],
+    "directoryListing": false
+  },
+  ":8081/whatever": {
+    "type": "file server",
+    "root": "./website2/whatever.txt"
+  },
+
+  ":8081/redirect-bash": {
+    "type": "cgi",
+    "root": "./website2/cgi-bin/redirect.sh"
+  },
+
+  ":8084": {
+    "type": "file server",
+    "root": "./src/conn.rs"
+  },
+  ":8082": {
+    "type": "redirect",
+    "target": "http://example.com"
   }
 }
