@@ -9,7 +9,7 @@
     }
   },
   "patternProperties": {
-    "^:\\d+(\\/.*)?$": {
+    "^.*:\\d+(\\/.*)?$": {
       "type": "object",
       "oneOf": [
         { "$ref": "#/$defs/fileServer" },
