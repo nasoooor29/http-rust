@@ -1,0 +1,26 @@
+{
+  "ports": {
+    ":8080": {
+      "type": "file server",
+      "root": "./website1",
+      "sizeLimit": "1024",
+      "log": true,
+      "defaultPages": {
+        "404": "404.html",
+        "403": "403.html"
+      },
+      "logLevel": "info"
+    },
+    ":8081": {
+      "type": "file server",
+      "root": "./website2",
+      "log": true
+    },
+    ":8082": {
+      "type": "proxy",
+      "target": "http://localhost:3000",
+      "log": true,
+      "logLevel": "debug"
+    }
+  }
+}
