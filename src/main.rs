@@ -11,7 +11,8 @@ fn main() {
     let mut router = Router::new_on_ports(&[8080, 9090]);
     register_routes(&mut router);
 
-    println!("listening on 8080, 9090");
+    info!("Starting server...");
+    info!("Server started on ports 8080 and 9090");
     loop {
         if let Err(err) = router.handle_connections() {
             eprintln!("server loop error: {err}");

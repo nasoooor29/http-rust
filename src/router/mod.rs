@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::log;
 use std::mem;
 use std::os::fd::RawFd;
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use libc::{EPOLLIN, epoll_event};
 use crate::conn::Conn;
 use crate::handlers::error_response;
 use crate::https::{HttpMethod, Request, Response, StatusCode};
+use crate::info;
 use crate::utils::helpers::create_epoll;
 use crate::utils::helpers::{close_fd, create_listen_socket, epoll_add};
 
@@ -83,7 +85,7 @@ impl Router {
         for &port in ports {
             match create_listen_socket(port) {
                 Ok(listen_fd) => {
-                    println!("listening on 0.0.0.0:{port}");
+                    info!("listening on 0.0.0.0:{port}");
                     if let Err(err) = epoll_add(epfd, listen_fd, EPOLLIN as u32) {
                         eprintln!("could not register listener on port {port} in epoll: {err}");
                         close_fd(listen_fd);
