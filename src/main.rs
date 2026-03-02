@@ -7,9 +7,7 @@ mod helpers;
 mod https;
 mod router;
 
-use crate::https::{
-    HttpMethod, Request, Response, StatusCode, response_with_body,
-};
+use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
 use crate::router::{Data, Router, error_response};
 
 fn main() {
@@ -23,12 +21,7 @@ fn main() {
     );
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
-    router.add_route(
-        8080,
-        "/health",
-        vec![HttpMethod::Get],
-        handle_public_health,
-    );
+    router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
     router.add_route(8080, "/upload", vec![HttpMethod::Post], handle_upload);
     router.add_route(
         8080,
@@ -38,12 +31,7 @@ fn main() {
     );
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
-    router.add_route(
-        9090,
-        "/health",
-        vec![HttpMethod::Get],
-        handle_admin_health,
-    );
+    router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
 
     println!("listening on 8080, 9090");
     loop {
@@ -75,7 +63,7 @@ fn handle_public_root(req: &Request, data: &Data) -> Response {
 }
 
 fn handle_public_health(req: &Request, _data: &Data) -> Response {
-    let _ = req.body.len();
+    let _ = req.data.body.len();
 
     response_with_body(
         &req.version,
@@ -97,7 +85,7 @@ fn handle_admin_root(req: &Request, _data: &Data) -> Response {
 }
 
 fn handle_admin_health(req: &Request, _data: &Data) -> Response {
-    let _ = req.body.len();
+    let _ = req.data.body.len();
 
     response_with_body(
         &req.version,
@@ -110,11 +98,11 @@ fn handle_admin_health(req: &Request, _data: &Data) -> Response {
 fn handle_upload(req: &Request, _data: &Data) -> Response {
     println!(
         "received upload: {} bytes\n{}",
-        req.body.len(),
-        String::from_utf8_lossy(&req.body)
+        req.data.body.len(),
+        String::from_utf8_lossy(&req.data.body)
     );
 
-    if let Err(e) = fs::write("uploaded", &req.body) {
+    if let Err(e) = fs::write("uploaded", &req.data.body) {
         eprintln!("failed to save uploaded body: {e}");
         return response_with_body(
             &req.version,
@@ -212,7 +200,7 @@ fn handle_file_post(req: &Request, path: &Path) -> Response {
     }
 
     let existed = path.exists();
-    match fs::write(path, &req.body) {
+    match fs::write(path, &req.data.body) {
         Ok(()) => {
             let status = if existed {
                 StatusCode::Ok

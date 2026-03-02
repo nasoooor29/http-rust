@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::router::Data;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HttpMethod {
     Get,
@@ -95,7 +97,7 @@ pub struct Request {
     pub query: String,
     pub version: String,
     pub headers: HeaderMap,
-    pub body: Vec<u8>,
+    pub data: Data,
 }
 
 #[derive(Debug, Clone)]
