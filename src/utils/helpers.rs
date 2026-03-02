@@ -126,12 +126,12 @@ pub fn create_listen_socket(port: u16) -> io::Result<RawFd> {
         close_fd(fd);
         return Err(last_err("libc::setsockopt(SO_REUSEADDR)"));
     }
-
+    // TODO: parse the address string to port and IP (NO NEED)
     let addr = libc::sockaddr_in {
         sin_family: libc::AF_INET as u16,
-        sin_port: port.to_be(), // network byte order
+        sin_port: port.to_be(), // network byte order // TODO: pass the port (NO NEED)
         sin_addr: libc::in_addr {
-            s_addr: u32::from(Ipv4Addr::UNSPECIFIED).to_be(), // 0.0.0.0
+            s_addr: u32::from(Ipv4Addr::UNSPECIFIED).to_be(), // 0.0.0.0 // TODO: pass the host (NO NEED)
         },
         sin_zero: [0; 8],
     };

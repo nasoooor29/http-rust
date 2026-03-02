@@ -72,6 +72,7 @@ pub enum ReadOutcome {
 }
 
 impl Router {
+    // TODO: change to addresses instead of ports (NO NEED)
     pub fn new_on_ports(ports: &[u16]) -> Self {
         let epfd = match create_epoll() {
             Ok(fd) => fd,
@@ -83,6 +84,7 @@ impl Router {
         let mut listen_fd_to_port: HashMap<RawFd, u16> = HashMap::new();
 
         for &port in ports {
+            // TODO: pass the address here (NO NEED)
             match create_listen_socket(port) {
                 Ok(listen_fd) => {
                     info!("listening on 0.0.0.0:{port}");
