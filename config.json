@@ -10,12 +10,6 @@
     },
     "directoryListing": true
   },
-  ":8081": {
-    "type": "file server",
-    "root": "./website2",
-    "defaultFile": "index.html",
-    "directoryListing": true
-  },
 
   ":8081/upload": {
     "type": "file server",
@@ -34,10 +28,6 @@
     "root": "./website2/cgi-bin/redirect.sh"
   },
 
-  ":8084": {
-    "type": "file server",
-    "root": "./src/conn.rs"
-  },
   ":8082": {
     "type": "redirect",
     "target": "http://example.com"
