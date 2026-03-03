@@ -15,6 +15,18 @@ pub struct Config {
     pub routes: HashMap<String, RouteRule>,
 }
 
+impl Config {
+    fn load_config_from_path(path: &Path) -> Result<Self, String> {
+        let raw = fs::read_to_string(path).map_err(|e| {
+            format!("failed to read config '{}': {e}", path.display())
+        })?;
+
+        serde_json::from_str::<Config>(&raw).map_err(|e| {
+            format!("failed to parse config '{}': {e}", path.display())
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RouteRule {
@@ -48,46 +60,41 @@ pub struct AppConfig {
     pub config: Config,
 }
 
-pub fn load_from_args() -> Result<AppConfig, String> {
-    let config_path = resolve_config_path()?;
-    let config = load_config_from_path(&config_path)?;
-
-    Ok(AppConfig {
-        config_path,
-        config,
-    })
-}
-
-fn resolve_config_path() -> Result<PathBuf, String> {
-    let mut args = env::args().skip(1);
-    let mut config_path = PathBuf::from("config.jsonc");
-
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-f" | "--config" => {
-                let path = args
-                    .next()
-                    .ok_or_else(|| format!("{arg} requires a file path"))?;
-                config_path = PathBuf::from(path);
-            }
-            "-h" | "--help" => {
-                return Err(
-                    "usage: cargo run -- [-f|--config <path>]".to_string()
-                );
-            }
-            _ => return Err(format!("unknown argument: {arg}")),
-        }
+impl AppConfig {
+    pub fn load_from_args() -> Result<Self, String> {
+        let config_path = Self::resolve_config_path()?;
+        Self::from_path(config_path)
     }
 
-    Ok(config_path)
-}
+    fn from_path(config_path: PathBuf) -> Result<Self, String> {
+        let config = Config::load_config_from_path(&config_path)?;
+        Ok(Self {
+            config_path,
+            config,
+        })
+    }
 
-fn load_config_from_path(path: &Path) -> Result<Config, String> {
-    let raw = fs::read_to_string(path).map_err(|e| {
-        format!("failed to read config '{}': {e}", path.display())
-    })?;
+    fn resolve_config_path() -> Result<PathBuf, String> {
+        let mut args = env::args().skip(1);
+        let mut config_path = PathBuf::from("config.jsonc");
 
-    serde_json::from_str::<Config>(&raw).map_err(|e| {
-        format!("failed to parse config '{}': {e}", path.display())
-    })
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "-f" | "--config" => {
+                    let path = args
+                        .next()
+                        .ok_or_else(|| format!("{arg} requires a file path"))?;
+                    config_path = PathBuf::from(path);
+                }
+                "-h" | "--help" => {
+                    return Err(
+                        "usage: cargo run -- [-f|--config <path>]".to_string()
+                    );
+                }
+                _ => return Err(format!("unknown argument: {arg}")),
+            }
+        }
+
+        Ok(config_path)
+    }
 }

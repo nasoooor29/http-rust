@@ -5,12 +5,12 @@ mod https;
 mod router;
 mod utils;
 
-use crate::config::load_from_args;
+use crate::config::AppConfig;
 use crate::handlers::register_routes;
 use crate::router::Router;
 
 fn main() {
-    let config = match load_from_args() {
+    let config = match AppConfig::load_from_args() {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("Error loading config: {}", e);
