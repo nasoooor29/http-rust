@@ -12,20 +12,18 @@
   },
 
   "localhost:8081/upload": {
-    // virtual host header
     "type": "file_server",
     "root": "./website2/uploads",
     "size_limit": 1024,
-    "allowed_verbs": ["POST"],
+    "allowed_verbs": ["Post"],
     "directory_listing": false
   },
 
   "0.0.0.0:8081/upload": {
-    // virtual host header
     "type": "file_server",
     "root": "./website2/uploads",
     "size_limit": 1024,
-    "allowed_verbs": ["POST"],
+    "allowed_verbs": ["Post"],
     "directory_listing": false
   },
 

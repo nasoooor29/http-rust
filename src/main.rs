@@ -5,11 +5,20 @@ mod https;
 mod router;
 mod utils;
 
+use crate::config::load_from_args;
 use crate::handlers::register_routes;
 use crate::router::Router;
 
 fn main() {
-    // TODO: read config with default conf location or with -f flag
+    let config = match load_from_args() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Error loading config: {}", e);
+            std::process::exit(1);
+        }
+    };
+    info!("Config loaded", "path" => config.config_path.display());
+
     // TODO: parse it with serde
     // Add validation with clear startup errors (invalid syntax, invalid route options, duplicate/conflicting listen declarations).
 
