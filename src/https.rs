@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+use serde::Deserialize;
+
 use crate::router::Data;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub enum HttpMethod {
     Get,
     Post,
@@ -27,10 +29,10 @@ pub enum StatusCode {
     Created,
     NoContent,
     BadRequest,
-    Forbidden,
+    // Forbidden,
     NotFound,
     MethodNotAllowed,
-    PayloadTooLarge,
+    // PayloadTooLarge,
     InternalServerError,
     VersionNotSupported,
 }
@@ -42,10 +44,10 @@ impl StatusCode {
             StatusCode::BadRequest => 400,
             StatusCode::Created => 201,
             StatusCode::NoContent => 204,
-            StatusCode::Forbidden => 403,
+            // StatusCode::Forbidden => 403,
             StatusCode::NotFound => 404,
             StatusCode::MethodNotAllowed => 405,
-            StatusCode::PayloadTooLarge => 413,
+            // StatusCode::PayloadTooLarge => 413,
             StatusCode::InternalServerError => 500,
             StatusCode::VersionNotSupported => 505,
         }
@@ -55,12 +57,12 @@ impl StatusCode {
         match self {
             StatusCode::Ok => "OK",
             StatusCode::BadRequest => "Bad Request",
-            StatusCode::Forbidden => "Forbidden",
+            // StatusCode::Forbidden => "Forbidden",
             StatusCode::Created => "Created",
             StatusCode::NoContent => "No Content",
             StatusCode::NotFound => "Not Found",
             StatusCode::MethodNotAllowed => "Method Not Allowed",
-            StatusCode::PayloadTooLarge => "Payload Too Large",
+            // StatusCode::PayloadTooLarge => "Payload Too Large",
             StatusCode::InternalServerError => "Internal Server Error",
             StatusCode::VersionNotSupported => "HTTP Version Not Supported",
         }

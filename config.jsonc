@@ -1,36 +1,36 @@
 {
-  "$schema": "./schema.json",
+  "schema": "./schema.json",
   ":8080": {
-    "type": "file server",
+    "type": "file_server",
     "root": "./website1",
-    "sizeLimit": 1024,
-    "errorPages": {
+    "size_limit": 1024,
+    "error_pages": {
       "404": "404.html",
       "500": "500.html"
     },
-    "directoryListing": true
+    "directory_listing": true
   },
 
   "localhost:8081/upload": {
     // virtual host header
-    "type": "file server",
+    "type": "file_server",
     "root": "./website2/uploads",
-    "sizeLimit": 1024,
+    "size_limit": 1024,
     "allowed_verbs": ["POST"],
-    "directoryListing": false
+    "directory_listing": false
   },
 
   "0.0.0.0:8081/upload": {
     // virtual host header
-    "type": "file server",
+    "type": "file_server",
     "root": "./website2/uploads",
-    "sizeLimit": 1024,
+    "size_limit": 1024,
     "allowed_verbs": ["POST"],
-    "directoryListing": false
+    "directory_listing": false
   },
 
   ":8081/whatever": {
-    "type": "file server",
+    "type": "file_server",
     "root": "./website2/whatever.txt"
   },
 

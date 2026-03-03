@@ -1,3 +1,4 @@
+mod config;
 mod conn;
 mod handlers;
 mod https;
@@ -11,7 +12,7 @@ fn main() {
     // TODO: read config with default conf location or with -f flag
     // TODO: parse it with serde
     // Add validation with clear startup errors (invalid syntax, invalid route options, duplicate/conflicting listen declarations).
-    
+
     // TODO: loop over over the ports put them in an array
     let mut router = Router::new_on_ports(&[8080, 9090]);
     // TODO: loop over the config and deal with the routes
@@ -25,4 +26,3 @@ fn main() {
     info!("Server started on ports 8080 and 9090");
     router.listen_and_serve()
 }
-
