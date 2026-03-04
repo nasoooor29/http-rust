@@ -14,6 +14,7 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum RouteRule {
     FileServer(FileServerConfig),
     Cgi(CgiConfig),
@@ -21,8 +22,9 @@ pub enum RouteRule {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileServerConfig {
-    pub root: Option<String>,
+    pub root: String,
     pub size_limit: Option<usize>,
     pub error_pages: Option<HashMap<String, String>>,
     pub directory_listing: Option<bool>,
@@ -30,11 +32,13 @@ pub struct FileServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CgiConfig {
-    pub root: Option<String>,
+    pub root: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedirectConfig {
     pub target: String,
 }

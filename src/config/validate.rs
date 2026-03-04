@@ -27,8 +27,7 @@ impl Config {
                     validate_file_server(route_key, cfg, &mut errors);
                 }
                 RouteRule::Cgi(cfg) => {
-                    let root = cfg.root.as_deref().map(str::trim).unwrap_or("");
-                    if root.is_empty() {
+                    if cfg.root.trim().is_empty() {
                         errors.push(format!(
                             "route '{route_key}' (cgi): 'root' is required and must be non-empty"
                         ));
@@ -59,10 +58,9 @@ fn validate_file_server(
     cfg: &FileServerConfig,
     errors: &mut Vec<String>,
 ) {
-    let root = cfg.root.as_deref().map(str::trim).unwrap_or("");
-    if root.is_empty() {
+    if cfg.root.trim().is_empty() {
         errors.push(format!(
-            "route '{route_key}' (file_server): 'root' is required and must be non-empty"
+            "route '{route_key}' (file_server): 'root' must be non-empty"
         ));
     }
 

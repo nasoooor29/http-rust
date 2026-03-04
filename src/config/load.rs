@@ -34,7 +34,7 @@ impl AppConfig {
 
 fn resolve_config_path() -> Result<PathBuf, String> {
     let mut args = env::args().skip(1);
-    let mut config_path = PathBuf::from("config.jsonc");
+    let mut config_path = PathBuf::from("config.json");
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
