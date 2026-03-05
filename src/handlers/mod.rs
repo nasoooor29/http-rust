@@ -129,10 +129,12 @@ fn handle_upload(req: &Request, _data: &Data) -> Response {
     )
 }
 
+type Handler = impl Fn(&Request, &Data) -> Response + Send + Sync;
+
 fn file_server_factory(
     with_listing: bool,
     dir_or_file: String,
-) -> impl Fn(&Request, &Data) -> Response + Send + Sync {
+) -> Handler {
     move |req: &Request, _data: &Data| -> Response {
         println!("  handling get uploaded");
         let body = match fs::read(&dir_or_file) {
