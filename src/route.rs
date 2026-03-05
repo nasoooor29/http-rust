@@ -32,10 +32,18 @@ pub fn register_routes(app_config: &AppConfig, router: &mut Router) {
                 }),
                 file_server_factory(file_server_config.clone()),
             ),
-            RouteRule::Cgi(cgi_config) => cgi_factory(cgi_config.clone()),
-            RouteRule::Redirect(redirect_config) => {
-                redirect_factory(redirect_config.clone())
-            }
+            RouteRule::Cgi(cgi_config) => router.add_route(
+                route_key.port,
+                &route_key.path,
+                vec![crate::https::HttpMethod::Get],
+                cgi_factory(cgi_config.clone()),
+            ),
+            RouteRule::Redirect(redirect_config) => router.add_route(
+                route_key.port,
+                &route_key.path,
+                vec![crate::https::HttpMethod::Get],
+                redirect_factory(redirect_config.clone()),
+            ),
         }
     }
 }
