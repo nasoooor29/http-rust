@@ -2,7 +2,9 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::https::{HttpMethod, Request, Response, StatusCode, response_with_body};
+use crate::https::{
+    HttpMethod, Request, Response, StatusCode, response_with_body,
+};
 use crate::router::{Data, Router};
 
 pub fn error_response(version: &str, status: StatusCode) -> Response {
@@ -25,7 +27,12 @@ pub fn register_routes(router: &mut Router) {
     );
 
     router.add_route(8080, "/", vec![HttpMethod::Get], handle_public_root);
-    router.add_route(8080, "/health", vec![HttpMethod::Get], handle_public_health);
+    router.add_route(
+        8080,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_public_health,
+    );
     router.add_route(8080, "/upload", vec![HttpMethod::Post], handle_upload);
 
     router.add_route(
@@ -36,7 +43,12 @@ pub fn register_routes(router: &mut Router) {
     );
 
     router.add_route(9090, "/", vec![HttpMethod::Get], handle_admin_root);
-    router.add_route(9090, "/health", vec![HttpMethod::Get], handle_admin_health);
+    router.add_route(
+        9090,
+        "/health",
+        vec![HttpMethod::Get],
+        handle_admin_health,
+    );
 }
 
 fn handle_public_root(req: &Request, data: &Data) -> Response {

@@ -6,13 +6,11 @@ use crate::config::model::{AppConfig, Config};
 
 impl Config {
     fn load_from_path(path: &Path) -> Result<Self, String> {
-        let raw = fs::read_to_string(path).map_err(|e| {
-            format!("failed to read config '{}': {e}", path.display())
-        })?;
+        let raw = fs::read_to_string(path)
+            .map_err(|e| format!("failed to read config '{}': {e}", path.display()))?;
 
-        serde_json::from_str::<Config>(&raw).map_err(|e| {
-            format!("failed to parse config '{}': {e}", path.display())
-        })
+        serde_json::from_str::<Config>(&raw)
+            .map_err(|e| format!("failed to parse config '{}': {e}", path.display()))
     }
 }
 
@@ -25,9 +23,11 @@ impl AppConfig {
     fn from_path(config_path: PathBuf) -> Result<Self, String> {
         let config = Config::load_from_path(&config_path)?;
         config.validate()?;
+        let listener_ports = config.listener_ports()?;
         Ok(Self {
             config_path,
             config,
+            listener_ports,
         })
     }
 }
@@ -45,9 +45,7 @@ fn resolve_config_path() -> Result<PathBuf, String> {
                 config_path = PathBuf::from(path);
             }
             "-h" | "--help" => {
-                return Err(
-                    "usage: cargo run -- [-f|--config <path>]".to_string()
-                );
+                return Err("usage: cargo run -- [-f|--config <path>]".to_string());
             }
             _ => return Err(format!("unknown argument: {arg}")),
         }

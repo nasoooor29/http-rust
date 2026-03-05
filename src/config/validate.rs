@@ -1,6 +1,7 @@
 use crate::config::model::{
     Config, FileServerConfig, RedirectConfig, RouteRule,
 };
+use crate::config::parse::parse_route_key;
 
 impl Config {
     pub fn validate(&self) -> Result<(), String> {
@@ -16,10 +17,9 @@ impl Config {
                 continue;
             }
 
-            if !route_key.contains(':') {
-                errors.push(format!(
-                    "route '{route_key}' is invalid: expected host:port or :port format"
-                ));
+            if let Err(err) = parse_route_key(route_key) {
+                errors.push(err);
+                continue;
             }
 
             match rule {
