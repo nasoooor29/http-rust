@@ -10,12 +10,18 @@ impl Config {
         if self.routes.is_empty() {
             errors.push("config has no routes".to_string());
         }
+        let mut existing_routes = Vec::<String>::new();
 
         for (route_key, rule) in &self.routes {
             if route_key.trim().is_empty() {
                 errors.push("route key cannot be empty".to_string());
                 continue;
             }
+            if existing_routes.contains(route_key) {
+                errors.push(format!("duplicate route key: '{route_key}'"));
+                continue;
+            }
+            existing_routes.push(route_key.clone());
 
             if let Err(err) = parse_route_key(route_key) {
                 errors.push(err);
